@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import io
 import ipaddress
+import json
 import logging
 import struct
 import tempfile
@@ -23,7 +24,7 @@ from captainguild.core import images, members as member_lists, messages, rankcar
 from captainguild.core.durations import parse_duration
 from captainguild.core.logsink import LogSink
 from captainguild.core.outside import OutsideError, _is_public, check_public_link
-from captainguild.core.perms import COMMAND_SCHEMA
+from captainguild.core.perms import COMMAND_SCHEMA, SETTINGS_SCHEMA
 from captainguild.core.settings import Settings
 from captainguild.core.timers import Timers
 from captainguild.core.validate import Field, Invalid, Schema, boolean, snowflakes
@@ -520,6 +521,32 @@ class SettingsLockTest(DbCase):
         await asyncio.wait_for(self.settings.restore(1, "x", {"a": True, "b": False}), 5)
         self.assertEqual(self.settings.get(1, "x"), {"a": False, "b": True})
 
+
+
+class FormerCommandNameTest(DbCase):
+    """A rule saved under a command's former name answers to its current name, read from the database or put back by a restore."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.activity = SimpleNamespace(record=self.record)
+        await Settings(self.db, self.activity).load()
+        saved = {"overwrites": {"clearwarns": {"bypass_roles": [994247288555831296]}}}
+        await self.db.run("INSERT INTO guild_settings (guild_id, module, data, updated_at) VALUES (1, 'commands', ?, 0)", (json.dumps(saved),))
+        self.settings = Settings(self.db, self.activity)
+        await self.settings.load()
+        self.settings.register("commands", SETTINGS_SCHEMA)
+
+    async def record(self, *args, **kwargs):
+        await asyncio.sleep(0)
+
+    async def test_a_saved_rule_answers_to_the_current_name(self):
+        overwrites = self.settings.get(1, "commands")["overwrites"]
+        self.assertEqual((list(overwrites), overwrites["clearwarnings"]["bypass_roles"]), (["clearwarnings"], [994247288555831296]))
+
+    async def test_a_restore_from_before_the_rename_answers_to_the_current_name(self):
+        await self.settings.restore(2, "commands", {"overwrites": {"clearwarns": {"bypass_roles": [994247288555831297]}}})
+        overwrites = self.settings.get(2, "commands")["overwrites"]
+        self.assertEqual((list(overwrites), overwrites["clearwarnings"]["bypass_roles"]), (["clearwarnings"], [994247288555831297]))
 
 class LogSinkEdgesTest(unittest.IsolatedAsyncioTestCase):
     def sink(self, channel=None, settled=True):

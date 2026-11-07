@@ -408,7 +408,7 @@ class SlashHappyPathTest(LiveBase):
         await self.call("warns")
         await self.call("removewarning", case=1)
         await self.call("warn", member=target, reason="two")
-        await self.call("clearwarns", member=target)
+        await self.call("clearwarnings", member=target)
         await self.call("mute", member=target, duration="1h", reason="r")
         self.role_update(self.role_muted["id"])
         await self.settle()

@@ -17,7 +17,7 @@ from tests.fakes import BotTest, FakeChannel, FakeMember, FakePermissions
 
 EVERYONE = ("view_channel", "send_messages", "read_message_history", "add_reactions", "embed_links", "attach_files")
 MODERATOR_DAY = ["ban", "kick", "softban", "tempban", "massban", "unban", "tempbans", "report", "vc_report", "dashboard", "my_data", "help", "ping", "highlight add", "rank", "level", "leaderboard", "members info", "role info", "reminder", "tag", "tag list"]
-BOT_MANAGER_DAY = [*MODERATOR_DAY, "mute", "unmute", "warn", "warns", "removewarning", "clearwarns", "timeout", "untimeout", "purge all", "notes setnote", "notes view", "reason", "modlog reason", "role add", "temprole add", "lockdown channel", "unlockdown channel", "raid on", "raid off", "setnick"]
+BOT_MANAGER_DAY = [*MODERATOR_DAY, "mute", "unmute", "warn", "warns", "removewarning", "clearwarnings", "timeout", "untimeout", "purge all", "notes setnote", "notes view", "reason", "modlog reason", "role add", "temprole add", "lockdown channel", "unlockdown channel", "raid on", "raid off", "setnick"]
 NEEDS_MORE = {"mute": "Manage Roles", "warn": "Manage Roles", "purge all": "Manage Server", "notes setnote": "Manage Server", "role add": "Manage Roles", "config disable": "Manage Server", "lockdown channel": "Manage Channels"}
 
 

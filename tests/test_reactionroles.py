@@ -2494,9 +2494,7 @@ class RealLibraryTest(GatewayTest):
             ("unlink", [message]),
             ("maxroles", [message, {"name": "roles_and_limits", "type": 3, "value": "Muted 5"}]),
             ("maxroles", [message]),
-            ("mode", [message, {"name": "mode", "type": 3, "value": "buttons"}]),
-            ("mode", [message, {"name": "mode", "type": 3, "value": "select"}]),
-            ("mode", [message, {"name": "mode", "type": 3, "value": "reactions"}]),
+            ("normal", [message]),
             ("aio", [{"name": "type", "type": 3, "value": "default"}, {"name": "color", "type": 3, "value": "FF0000"}, {"name": "text", "type": 3, "value": f"Title | Words {RED} Muted"}]),
             ("remove", [{"name": "role", "type": 3, "value": self.role_muted["id"]}, message]),
             ("purge", [{"name": "message_id", "type": 3, "value": str(other.message_id)}]),
@@ -2566,6 +2564,15 @@ class RealLibraryTest(GatewayTest):
         self.assertEqual(roles["Moderator"]["members"], 1)
         self.assertEqual(roles["Admin"]["members"], 2)
         self.assertEqual(roles["@everyone"]["members"], self.guild.member_count)
+
+    async def test_a_typed_mode_switches_buttons_select_and_reactions(self):
+        rr = await self.make(RED)
+        for mode in ("buttons", "select", "reactions"):
+            text = f"!rr mode {rr.message_id} {mode}"
+            self.dispatch_message(user_id=self.owner_id, content=text)
+            await self.finish()
+            self.assert_no_errors(text)
+            self.assertEqual((await self.rr.get(rr.message_id)).mode, mode, text)
 
     async def test_text_commands_parse_every_form(self):
         rr = await self.make(RED)

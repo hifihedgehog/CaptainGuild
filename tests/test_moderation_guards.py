@@ -579,7 +579,7 @@ class TypedNameTest(LiveBase):
         self.assertEqual((await self.cases())[-1]["action"], "tempban")
 
     async def test_slash_options_stay_user_pickers(self):
-        for name, option in (("ban", "user"), ("tempban", "user"), ("softban", "user"), ("kick", "member"), ("mute", "member"), ("warn", "member"), ("clearwarns", "member")):
+        for name, option in (("ban", "user"), ("tempban", "user"), ("softban", "user"), ("kick", "member"), ("mute", "member"), ("warn", "member"), ("clearwarnings", "member")):
             payload = next(c for c in self.bot.tree.get_commands() if c.name == name).to_dict(self.bot.tree)
             found = next(o for o in payload["options"] if o["name"] == option)
             self.assertEqual(found["type"], discord.AppCommandOptionType.user.value, name)

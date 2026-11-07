@@ -2638,7 +2638,7 @@ class ReactionRoles(Module):
             return
         await self._set_kind(ctx, message, "temp", temp_seconds=seconds)
 
-    @reactionrole.command(name="normal", with_app_command=False, description="Put a message back to the normal type")
+    @reactionrole.command(name="normal", description="Put a message back to the normal type")
     @requires("manage_guild")
     async def rr_normal(self, ctx: commands.Context, message_id: str) -> None:
         await ctx.defer(ephemeral=True)
@@ -2939,7 +2939,7 @@ class ReactionRoles(Module):
         await self._record(ctx, "reactionrole.maxroles", str(rr.message_id))
         await ctx.ok("Updated the maximum holders for that message.")
 
-    @reactionrole.command(name="mode", description="Choose reactions, buttons or a select menu for a message")
+    @reactionrole.command(name="mode", with_app_command=False, description="Choose reactions, buttons or a select menu for a message")
     @requires("manage_guild")
     @app_commands.describe(message_id="The message's ID or link", mode="How members pick roles")
     async def rr_mode(self, ctx: commands.Context, message_id: str, mode: Literal["reactions", "buttons", "select"]) -> None:
@@ -3166,7 +3166,7 @@ class ReactionRoles(Module):
     @rr_limit.autocomplete("message_id")
     @rr_unlink.autocomplete("message_id")
     @rr_maxroles.autocomplete("message_id")
-    @rr_mode.autocomplete("message_id")
+    @rr_normal.autocomplete("message_id")
     async def _message_choices(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         guild = interaction.guild
         if guild is None:

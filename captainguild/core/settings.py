@@ -30,6 +30,21 @@ MIGRATIONS = [
 
 Listener = Callable[[int, dict], Awaitable[None]]
 
+# Commands renamed after servers saved rules for them, from the name a rule may be saved under to the name it answers to now.
+FORMER_COMMAND_NAMES = {"clearwarns": "clearwarnings"}  # 1.2.2
+
+
+def upgraded(module: str, data: Any) -> Any:
+    """Saved settings in today's shape. A command rule saved under a former name moves to the command's current name."""
+    if module != "commands" or not isinstance(data, dict) or not isinstance(data.get("overwrites"), dict):
+        return data
+    overwrites = dict(data["overwrites"])
+    for old, new in FORMER_COMMAND_NAMES.items():
+        if old in overwrites:
+            rule = overwrites.pop(old)
+            overwrites.setdefault(new, rule)
+    return {**data, "overwrites": overwrites}
+
 
 @dataclass(frozen=True)
 class Actor:
@@ -51,7 +66,7 @@ class Settings:
     async def load(self) -> None:
         await self.db.migrate("settings", MIGRATIONS)
         for row in await self.db.all("SELECT guild_id, module, data FROM guild_settings"):
-            self._stored[(row["guild_id"], row["module"])] = json.loads(row["data"])
+            self._stored[(row["guild_id"], row["module"])] = upgraded(row["module"], json.loads(row["data"]))
 
     def register(self, module: str, schema: Schema) -> None:
         self.schemas[module] = schema
@@ -95,7 +110,7 @@ class Settings:
         schema = self.schemas[module]
         async with self._locks.setdefault((guild_id, module), asyncio.Lock()):
             before = self.get(guild_id, module)
-            after = schema.merged(data)
+            after = schema.merged(upgraded(module, data))
             await self._write(guild_id, module, after, actor)
             await self.activity.record(guild_id, actor, f"{module}.restore", module=module, before=before, after=after)
         for listener in self._listeners.get(module, []):

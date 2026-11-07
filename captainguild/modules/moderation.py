@@ -2169,7 +2169,7 @@ class Moderation(Module):
         await self.bot.activity_log.record(ctx.guild.id, self.bot.actor(ctx.author), "case.void", detail=f"Case {case}")
         await ctx.ok(f"Removed the warning in case {case}.")
 
-    @commands.hybrid_command(name="clearwarns", aliases=["clearwarn", "clearwarnings"], description="Remove all of a member's warnings")
+    @commands.hybrid_command(name="clearwarnings", aliases=["clearwarn", "clearwarns"], description="Remove all of a member's warnings")
     @commands.guild_only()
     @requires("manage_roles")
     @app_commands.describe(member="Whose warnings to remove")
