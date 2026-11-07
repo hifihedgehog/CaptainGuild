@@ -144,11 +144,13 @@ class Network:
         if not self.keep_history:
             return []
         found = sorted((m for m in self.messages.values() if int(m["channel_id"]) == channel_id), key=lambda m: int(m["id"]), reverse=True)
+        limit = int(query.get("limit") or 50)
         if query.get("before"):
             found = [m for m in found if int(m["id"]) < int(query["before"])]
         if query.get("after"):
-            found = [m for m in found if int(m["id"]) > int(query["after"])]
-        return [self._seen(m) for m in found[:int(query.get("limit") or 50)]]
+            # Discord answers with the messages right after it, the newest of those first, which is how discord.py pages forward (_after_strategy in discord/abc.py).
+            return [self._seen(m) for m in [m for m in found if int(m["id"]) > int(query["after"])][-limit:]]
+        return [self._seen(m) for m in found[:limit]]
 
     async def cdn(self, url: str, **kwargs: Any) -> bytes:
         return b"file from " + url.encode()

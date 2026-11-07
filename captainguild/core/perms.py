@@ -89,6 +89,7 @@ class Decision:
     delete: bool = False
     redirect: int | str | None = None
     restricted_channel: int | None = None
+    waived: bool = False  # a bypass role or the bot manager role stood in for a permission the person lacks
 
 
 @dataclass
@@ -146,6 +147,7 @@ def evaluate(settings: dict, *, root: str, leaf: str | None = None, required: It
     if missing and not who.is_owner and "administrator" not in who.permissions and not has_bypass:
         if not is_manager or ("ban_members" in missing and not holds_manager_role):
             return Decision(False, f"You need {permission_names(missing)} to use this command.")
+    decision.waived = bool(missing) and not who.is_owner and "administrator" not in who.permissions
 
     if overwrite.get("mod_only") and not (who.is_admin or is_manager or has_bypass):
         return Decision(False, "This command is limited to moderators.")

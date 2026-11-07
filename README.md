@@ -34,11 +34,12 @@ Captain Guild is a self-hosted Discord bot with a web dashboard. One process run
 | RSS feeds | Any RSS or Atom feed, read every minute and posted in a channel under the feed's own name. |
 | Channel archive | Copies a channel or a forum, threads included, into another channel under each author's name, and picks up where it stopped. |
 | Entry giveaways | A channel or forum where each member's first message is their one entry, and a draw that gives each member one chance. |
+| Forum messages | A welcome in each new post of the forums you pick, one reminder in a post with no message for six days, and a Mark as Solved button and Mark as Solution menu that tag and close a post. |
 | Wiki answers | Answers members' questions from copies of the wikis and documentation sites you name, with links to the pages it drew from. It also plans projects with a sketch, searches the web, writes printable OpenSCAD models, and answers new forum posts. It runs on the host's own Anthropic API key, in the servers the host names, with a daily limit for each person and a monthly budget a server can set. |
 
 Each server sets all of this on its own dashboard, and a Quick setup page covers the common choices. The [docs page](captainguild/web/static/docs.html) lists every command and who can run it.
 
-Collaborative messages, the message mover, translation, bookmarks, RSS feeds, the channel archive, entry giveaways and wiki answers are command packs. A server sees a pack's commands only once someone who manages the server switches it on from the dashboard.
+Collaborative messages, the message mover, translation, bookmarks, RSS feeds, the channel archive, entry giveaways, wiki answers and forum messages are command packs. A server sees a pack's commands only once someone who manages the server switches it on from the dashboard.
 
 ## Your data
 

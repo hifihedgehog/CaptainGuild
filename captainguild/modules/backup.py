@@ -115,7 +115,8 @@ SPECIAL_TABLES = {"guild_settings", "backup_snapshots"}
 GLOBAL_TABLES = {"kv", "web_sessions", "schema_steps", "sqlite_sequence", "youtube_state", "voicelink_held", "autorole_waiting", "raid_modes", "raid_holds", "wiki_copies", "wiki_pages"}
 # A history keeps what's in it when a backup comes back: only what's missing gets added. Replacing the activity log would also let a file erase who changed what.
 # The same goes for what AI answers cost and how many each person asked for today: an older file must not lower either.
-MERGED_TABLES = {"activity", "timers", "command_uses", "answer_costs", "answer_uses", "answer_auto_days"}
+# And for the forum posts welcomed and reminded: an older file must not forget one, or it would be welcomed or reminded twice.
+MERGED_TABLES = {"activity", "timers", "command_uses", "answer_costs", "answer_uses", "answer_auto_days", "forum_welcomes", "forum_reminders"}
 ACTIVITY_JSON_COLUMNS = ("before_data", "after_data")
 _SECRET_COLUMN = re.compile(r"(?:^|_)(?:token|secret|password|api_key)(?:$|_)", re.IGNORECASE)
 _DIGITS = re.compile(r"-?[0-9]{1,20}")

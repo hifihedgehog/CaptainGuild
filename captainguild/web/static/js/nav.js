@@ -53,6 +53,7 @@ export const NAV = [
     { key: 'entrygiveaways', name: 'Entry giveaways', icon: 'gift' },
     { key: 'channelarchive', name: 'Channel archive', icon: 'copy' },
     { key: 'answers', name: 'Wiki answers', icon: 'book-open' },
+    { key: 'forummessages', name: 'Forum messages', icon: 'message-circle' },
   ] },
 ];
 

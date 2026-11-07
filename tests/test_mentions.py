@@ -14,6 +14,7 @@ from captainguild.modules.roles import Confirm
 from captainguild.core.perms import Decision
 from tests.fakes import BotTest, FakeMember, FakePermissions
 from tests.gateway import GatewayTest, iso, new_id as gateway_id, user_json
+from tests.voice_report_harness import Harness
 
 MENTION = re.compile(r"<@(\d+)>")
 
@@ -406,3 +407,31 @@ class RestrictedLibraryTest(GatewayTest):
         written = sorted(int(user) for body in sent for user in MENTION.findall(body["content"]) if int(user) != self.mod_id)
         self.assertEqual(allowed, sorted(targets + [self.member_id]))
         self.assertEqual(written, allowed)
+
+
+class BypassGatewayTest(Harness):
+    modules = [Mentions]
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        usual = discord.Permissions(view_channel=True, send_messages=True, read_message_history=True, use_application_commands=True)
+        self.state.parse_guild_role_update({"guild_id": str(self.guild_id), "role": {**self.role_everyone, "permissions": str(usual.value)}})
+        self.role = self.guild.get_role(int(self.role_member["id"]))
+
+    def pings(self) -> list[dict]:
+        """Every message that pings members by name, posted in the channel or sent as the slash command's follow-up."""
+        routes = ("/channels/{channel_id}/messages", "/webhooks/{webhook_id}/{webhook_token}", "/interactions/{webhook_id}/{webhook_token}/callback")
+        bodies = [body.get("data", body) if path.endswith("/callback") else body for method, path, body in self.net.calls if method == "POST" and path in routes]
+        return [body for body in bodies if (body.get("allowed_mentions") or {}).get("users")]
+
+    async def test_a_bypass_role_runs_it_without_mention_everyone(self):
+        # The cut-over gives the Moderator role a bypass here, since the old bot let that role run it, and moderators can lack Mention Everyone.
+        await self.bot.settings.save(self.guild_id, "commands", {"overwrites": {"mass_mention": {"bypass_roles": [int(self.role_mod["id"])]}}})
+        await self.slash("mass_mention", self.mod_id, role1=self.role)
+        self.assertTrue(self.pings(), self.last_answer())
+        self.assert_no_errors()
+
+    async def test_without_the_bypass_mention_everyone_is_still_needed(self):
+        await self.slash("mass_mention", self.mod_id, role1=self.role)
+        self.assertEqual(self.pings(), [])
+        self.assertIn("Mention Everyone", self.last_answer())

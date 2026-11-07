@@ -148,8 +148,11 @@ class Mentions(Module):
 
     async def _run(self, ctx: commands.Context, roles: list[Any]) -> None:
         guild = ctx.guild
-        # A slash command runs even where its user can't post, and the pings land in that channel.
-        refusal = access.post_refusal(ctx.author, ctx.channel) or access.ping_refusal(ctx.author, ctx.channel)
+        # A slash command runs even where its user can't post, and the pings land in that channel. A bypass role or the bot manager role on this
+        # command stands in for Mention Everyone, as the command's own rule lets it.
+        refusal = access.post_refusal(ctx.author, ctx.channel)
+        if not refusal and not getattr(getattr(ctx, "decision", None), "waived", False):
+            refusal = access.ping_refusal(ctx.author, ctx.channel)
         if refusal:
             await ctx.fail(refusal)
             return
