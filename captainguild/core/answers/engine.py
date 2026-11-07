@@ -19,6 +19,7 @@ import traceback
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
+from xml.etree import ElementTree
 
 import anthropic
 
@@ -436,6 +437,91 @@ def render_sketch(svg: str) -> bytes:
     return png
 
 
+# cairosvg (2.9.1, cairosvg/parser.py:224-226 and 246-311) draws a <text>, <textPath> or <a> and everything inside it as one run of text.
+# Inside a run, tspan, textPath, a and text draw their own text (cairosvg/surface.py:50-72), a tref draws the text of the element it
+# names and then that element's tail in place of its own (parser.py:262-306), and any other element draws only the text after its
+# closing tag. The SVG holds no declarations (_SVG_REFUSED), so parsing it here can't expand an entity.
+_SVG_NAMESPACE = "{http://www.w3.org/2000/svg}"
+_XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
+_XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
+_RUN_ROOTS = ("text", "textPath", "a")
+_DRAWS_ITS_TEXT = ("a", "text", "textPath", "tspan")
+
+
+def _svg_tag(element: Any) -> str:
+    """An element's name as cairosvg reads it: bare in the SVG namespace or in none, and with its namespace otherwise
+    (parser.py:169-172)."""
+    tag = element.tag if isinstance(element.tag, str) else ""
+    return tag[len(_SVG_NAMESPACE):] if tag.startswith(_SVG_NAMESPACE) else tag
+
+
+def _preserves(element: Any, inherited: bool) -> bool:
+    """Whether xml:space is preserve for an element, which keeps its parent's setting unless it has its own (parser.py:180-184)."""
+    value = element.get(_XML_SPACE)
+    return inherited if value is None else value == "preserve"
+
+
+def _white_spaces(text: str | None, preserve: bool) -> str:
+    """Text as cairosvg's handle_white_spaces leaves it (parser.py:57-70): with xml:space preserve, each line break and tab becomes a
+    space, and otherwise line breaks are dropped, tabs become spaces and runs of spaces become one."""
+    if not text:
+        return ""
+    if preserve:
+        return re.sub("[\n\r\t]", " ", text)
+    return re.sub(" +", " ", re.sub("\t", " ", re.sub("[\n\r]", "", text)))
+
+
+def _run_text(root: Any, preserve: bool, ids: dict[str, Any]) -> str:
+    """The text cairosvg draws for one run, in order, with nothing where its tags are."""
+    pieces = [_white_spaces(root.text, preserve)]
+    steps: list[tuple[str, Any, bool]] = [("element", child, preserve) for child in list(root)[::-1]]
+    while steps:
+        step, item, inherited = steps.pop()
+        if step == "tail":
+            pieces.append(_white_spaces(item, inherited))
+            continue
+        own = _preserves(item, inherited)
+        tag = _svg_tag(item)
+        if tag == "tref":
+            href = (item.get(_XLINK_HREF) or item.get("href") or "").strip()
+            target = ids.get(href[1:]) if href.startswith("#") else None
+            if target is not None:
+                pieces.append(_white_spaces("".join(target.itertext()), own))
+                pieces.append(_white_spaces(target.tail, inherited))
+            continue
+        if tag in _DRAWS_ITS_TEXT:
+            pieces.append(_white_spaces(item.text, own))
+        steps.append(("tail", item.tail, inherited))
+        steps.extend(("element", child, own) for child in list(item)[::-1])
+    return "".join(pieces)
+
+
+def sketch_texts(svg: str) -> list[str]:
+    """The words a sketch draws, for the word screen. One reading puts a space at every tag. Beside it, when it differs, another joins
+    each run of text the way cairosvg draws it, so a word split across tspans or lines reads whole, with a space between runs."""
+    spaced = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", svg)).split())
+    try:
+        tree = ElementTree.fromstring(svg.encode("utf-8"))
+    except ElementTree.ParseError:  # cairosvg drew it, so it parses, and if it didn't every tag would come out without a space
+        runs = [html.unescape(re.sub(r"<[^>]+>", "", svg))]
+    else:
+        ids: dict[str, Any] = {}
+        for element in tree.iter():
+            if element.get("id") is not None:
+                ids.setdefault(element.get("id"), element)
+        runs = []
+        elements = [(tree, False)]
+        while elements:
+            element, inherited = elements.pop()
+            own = _preserves(element, inherited)
+            if _svg_tag(element) in _RUN_ROOTS:
+                runs.append(_run_text(element, own, ids))
+            else:
+                elements.extend((child, own) for child in list(element)[::-1])
+    joined = " ".join(words for words in (" ".join(run.split()) for run in runs) if words)
+    return [spaced, joined] if joined and joined != spaced else [spaced]
+
+
 async def draw_sketch(args: dict, answer: Answer) -> tuple[str, bool]:
     if answer.image is not None:
         return "A sketch is already attached. Don't draw another.", True
@@ -448,5 +534,5 @@ async def draw_sketch(args: dict, answer: Answer) -> tuple[str, bool]:
         return f"The sketch didn't render: {error}. Fix the SVG and call draw_sketch again, or skip it.", True
     answer.image_caption = str(args.get("caption", "")).strip()[:CAPTION_MAX]
     # The words drawn in the sketch, with character references decoded the way the renderer reads them.
-    answer.screen_text = [" ".join(html.unescape(re.sub(r"<[^>]+>", " ", svg)).split())]
+    answer.screen_text = await asyncio.to_thread(sketch_texts, svg)
     return "The sketch rendered and will be attached under your reply.", False

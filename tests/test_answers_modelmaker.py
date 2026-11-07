@@ -193,6 +193,118 @@ class FileFormsTest(unittest.TestCase):
         self.assertLess(time.perf_counter() - started, 1.0, "reading each call's arguments again inside every outer call took seconds")
 
 
+class DrawnTextTest(unittest.IsolatedAsyncioTestCase):
+    """What the code can draw reaches the word screen the way OpenSCAD 2021.01 would draw it, beside the source itself."""
+
+    async def screened(self, scad: str) -> list[str]:
+        answer = Answer(status="ok")
+        with mock.patch.object(modelmaker, "run_held", OpenScad()):
+            report, failed = await modelmaker.render_model({"name": "Sign", "scad": scad}, answer)
+        self.assertFalse(failed, report)
+        self.assertEqual(answer.screen_text[0], scad, "the source itself is screened as before")
+        return answer.screen_text[1:]
+
+    async def test_strings_reach_the_screen_decoded_as_the_lexer_reads_them(self):
+        # src/lexer.l:171-180 at the openscad-2021.01 tag: \n, \t, \r, \\ and \" become those characters (171-175), \x with a hex pair
+        # from 01 to 7f the ASCII character and \x00 a space (177), \u with four hex digits or \U with six the character, or a space for
+        # zero, a surrogate or a value past U+10FFFF (178 and to_utf8), and a line break inside the string is left out while a carriage
+        # return stays (179-180). A backslash before anything else matches no rule, so flex's default rule drops it.
+        cases = [
+            (r'text("b\x61dword");', ["badword"]),
+            (r'text("b\u' + '0061dword");', ["badword"]),
+            (r'text("b\U000061dword");', ["badword"]),
+            (r'text("ba\d\word");', ["badword"]),
+            ('text("bad\nword");', ["badword"]),
+            (r'text("bad\x00word");', ["bad word"]),
+            (r'text("bad\uD800word \U110000x");', ["bad word  x"]),
+            (r'text("a\nb\tc\rd\\e\"f");', ['a\nb\tc\rd\\e"f']),
+            (r'text("\x8f\u12");', ["x8fu12"]),
+            # Unchanged by decoding, so the source already shows it as drawn.
+            ('text("one\rtwo");', []),
+            ('text("badword");', []),
+        ]
+        for scad, drawn in cases:
+            with self.subTest(scad=scad):
+                self.assertEqual(await self.screened(scad), drawn)
+
+    async def refused(self, scad: str) -> str:
+        programs = OpenScad()
+        with mock.patch.object(modelmaker, "run_held", programs):
+            report, failed = await modelmaker.render_model({"name": "Sign", "scad": scad}, Answer(status="ok"))
+        self.assertTrue(failed, report)
+        self.assertEqual(programs.commands, [], "refused before OpenSCAD runs")
+        return report
+
+    async def test_chr_reaches_the_screen_as_openscad_spells_it(self):
+        # src/func.cc:489-497 joins the text chr_visitor makes of each argument (src/value.cc:485-527). A number gives the code point of
+        # its whole part, and nothing for zero, a negative number, a surrogate or a code past U+10FFFF. A vector gives each item, and a
+        # range each value, with nothing for a range of 10,000 values or more (value.cc:517-521, 1157-1177). [begin:end] runs forward
+        # even when written backward (src/expr.cc:272-277), and x86-64 builds keep the low 32 bits of a code past 2^32.
+        cases = [
+            ("text(chr(98, 97, 100, 119, 111, 114, 100));", ["badword"]),
+            ("text(chr([98, 97, 100], [[119], 111.9, 114], 100));", ["badword"]),
+            ("text(chr([97:100]));", ["abcd"]),
+            ("text(chr([100:97]));", ["abcd"]),
+            ("text(chr([98:-1:97], [100]));", ["bad"]),
+            ("text(chr([97:2:101]));", ["ace"]),
+            ("text(chr(0, -98, 0.5, 55296, 1114112, 98));", ["b"]),
+            ("text(chr(c = 98, 97, 100));", ["bad"]),
+            ("text(chr([0:10000], 98));", ["b"]),
+            ("text(chr(4294967394));", ["b"]),
+            ("text(chr());", []),
+        ]
+        for scad, drawn in cases:
+            with self.subTest(scad=scad):
+                self.assertEqual(await self.screened(scad), drawn)
+
+    async def test_chr_of_anything_but_numbers_vectors_and_ranges_is_refused(self):
+        for scad in ["text(chr(x));", "x = 98;\ntext(chr(x + 1));", "text(chr([for (i = [97:99]) i]));", 'text(chr("a"));',
+                     'text(chr(ord("a")));', "text(chr((98)));", "text(chr([98, x]));", "text(chr([97:x]));", "f = function(c) chr(c);"]:
+            with self.subTest(scad=scad):
+                self.assertIn("Write the text as a string", await self.refused(scad))
+
+    async def test_text_built_past_the_limits_is_refused(self):
+        deep = "text(chr(" + "[" * (modelmaker.TEXT_DEPTH + 1) + "98" + "]" * (modelmaker.TEXT_DEPTH + 1) + "));"
+        self.assertIn("than can be checked", await self.refused(deep))
+        wide = "text(chr(" + ", ".join(["[1:9999]"] * (modelmaker.TEXT_BUDGET // 9999 + 1)) + "));"
+        self.assertIn("than can be checked", await self.refused(wide))
+
+    async def test_str_reaches_the_screen_joined(self):
+        # src/func.cc:479-487: str() joins its arguments with nothing between them. A string joins decoded, a number as written, and a
+        # name as the string its one top-level assignment gives it when that's a string, a str() or a chr(). Anything else joins as a
+        # space: a name assigned more than once, inside a block, as a parameter or never, a name that leads back to itself, and any
+        # other expression.
+        cases = [
+            ('text(str("bad", "word"));', ["badword"]),
+            (r'text(str("b\x61d", "word"));', ["badword", "bad"]),
+            ("text(str(1, -2.50));", ["1-2.50"]),
+            ('text(str(a = "bad", b = "word"));', ["badword"]),
+            ('w = "word";\ntext(str("bad", w));', ["badword"]),
+            ('text(str("bad", w));\nw = "word";', ["badword"]),
+            ('w = str("wo", "rd");\ntext(str("bad", w));', ["word", "badword"]),
+            ("w = chr(119, 111, 114, 100);\ntext(str(chr(98, 97, 100), w));", ["word", "bad", "badword"]),
+            ('text(str(str("ba", "d"), "word"));', ["badword", "bad"]),
+            ('text(str("bad", x, "word"));', ["bad word"]),
+            ('text(str("bad", 1 + 2, "word"));', ["bad word"]),
+            ('w = "word";\nw = "work";\ntext(str("bad", w));', ["bad "]),
+            ('module sign() { w = "word"; text(str("bad", w)); }\nsign();', ["bad "]),
+            ('w = "word";\nmodule sign(w = "work") text(str("bad", w));', ["bad "]),
+            ('n = 5;\ntext(str("bad", n));', ["bad "]),
+            ('a = str("b", a);\ntext(a);', ["b "]),
+        ]
+        for scad, drawn in cases:
+            with self.subTest(scad=scad):
+                self.assertCountEqual(await self.screened(scad), drawn)
+
+    async def test_str_built_past_the_limits_is_refused(self):
+        deep = "text(" + "str(" * (modelmaker.TEXT_DEPTH + 1) + '"a"' + ")" * (modelmaker.TEXT_DEPTH + 1) + ");"
+        self.assertIn("than can be checked", await self.refused(deep))
+        chain = "".join(f"a{number} = str(a{number + 1});\n" for number in range(modelmaker.TEXT_DEPTH + 1)) + "text(a0);"
+        self.assertIn("than can be checked", await self.refused(chain))
+        long = 'a = "' + "x" * 5000 + '";\ntext(str(' + ", ".join(["a"] * (modelmaker.TEXT_BUDGET // 5000 + 1)) + "));"
+        self.assertIn("than can be checked", await self.refused(long))
+
+
 class HeldInTest(unittest.TestCase):
     """The limits every OpenSCAD run gets, read from what would be started, since prlimit and account switching are Linux's."""
 

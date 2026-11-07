@@ -543,6 +543,48 @@ class TermListsScreenTest(AnswersCase):
         self.assertEqual([row["status"] for row in await self.costs()], ["blocked_reply"], "the billed answer keeps its row")
         self.assertEqual(await self.uses(), 1)
 
+    # Models whose source doesn't show the listed word as written, though OpenSCAD draws it.
+    DRAWN_WORDS = [
+        r'linear_extrude(height = 1) text("b\x61dword");',
+        "linear_extrude(height = 1) text(chr(98, 97, 100, 119, 111, 114, 100));",
+        'linear_extrude(height = 1) text(str("bad", "word"));',
+        'w = "word";\nlinear_extrude(height = 1) text(str("bad", w));',
+    ]
+
+    async def test_a_listed_word_a_model_draws_stops_the_post(self):
+        for scad in self.DRAWN_WORDS:
+            with self.subTest(scad=scad):
+                self.answers._bursts.clear()
+                self.model.reply(self.model.tool("render_model", {"name": "Sign", "scad": scad}), self.model.text("A sign."))
+                with mock.patch.object(modelmaker, "available", lambda: True), mock.patch.object(modelmaker, "run_held", OpenScad()):
+                    await self.slash("make_model", description="A sign for my workshop door")
+                self.assertEqual(self.last_text(), pack.RULES_NOTICE)
+                self.assertEqual((await self.costs())[-1]["status"], "blocked_reply")
+
+    async def test_a_listed_word_a_drawing_splits_with_tags_stops_the_post(self):
+        if not pack.engine.sketches_available():
+            self.skipTest("The cairo library isn't on this machine.")
+        for word in ["bad<tspan>word</tspan>", "b<a href='#x'>ad</a>word", "bad\nword"]:
+            with self.subTest(word=word):
+                self.answers._bursts.clear()
+                drawing = SVG.replace("Tom &amp; Jerry", word)
+                self.model.reply(self.model.tool("draw_sketch", {"svg": drawing, "caption": "x"}), self.model.text("Here. [S1]"))
+                await self.slash("brainstorm", idea="A sign for my workshop door, with a drawing")
+                self.assertEqual(self.last_text(), pack.RULES_NOTICE)
+                self.assertEqual((await self.costs())[-1]["status"], "blocked_reply")
+
+    async def test_a_listed_word_a_drawing_spells_with_character_references_stops_the_post(self):
+        if not pack.engine.sketches_available():
+            self.skipTest("The cairo library isn't on this machine.")
+        for word in ["b&#97;dword", "b&#x61;dword", "&#98;&#x61;dword"]:
+            with self.subTest(word=word):
+                self.answers._bursts.clear()
+                drawing = SVG.replace("Tom &amp; Jerry", word)
+                self.model.reply(self.model.tool("draw_sketch", {"svg": drawing, "caption": "x"}), self.model.text("Here. [S1]"))
+                await self.slash("brainstorm", idea="A sign for my workshop door, with a drawing")
+                self.assertEqual(self.last_text(), pack.RULES_NOTICE)
+                self.assertEqual((await self.costs())[-1]["status"], "blocked_reply")
+
     async def test_a_listed_word_in_a_drawing_stops_the_post(self):
         if not pack.engine.sketches_available():
             self.skipTest("The cairo library isn't on this machine.")

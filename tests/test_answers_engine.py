@@ -288,6 +288,43 @@ class SketchTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(failed)
         self.assertIn("already attached", again)
 
+    async def test_a_run_of_text_reaches_the_screen_joined_as_cairosvg_draws_it(self):
+        # cairosvg 2.9.1 draws a <text>, <textPath> or <a> and everything inside it as one run (cairosvg/parser.py:224-226, 246-311).
+        # Inside it, tspan, textPath, a and text draw their own text (surface.py:50-72), tref draws the text of the element it names
+        # (parser.py:262-280), any other element draws only what follows its closing tag (293-306), and a line break is dropped unless
+        # xml:space is preserve (handle_white_spaces, 57-70). Each of the joined cases draws the same picture as "badword". Separate
+        # <text> elements stay apart.
+        head = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50">'
+        cases = [
+            ("<text x='5' y='20'>bad<tspan>word</tspan></text>", ["bad word", "badword"]),
+            ("<text x='5' y='20'>bad<tspan>wo<tspan>r</tspan></tspan>d</text>", ["bad wo r d", "badword"]),
+            ("<text x='5' y='20'>b<a href='#x'>ad</a>word</text>", ["b ad word", "badword"]),
+            ("<text x='5' y='20'>bad\nword</text>", ["bad word", "badword"]),
+            ("<text x='5' y='20'>bad<title>X</title>word</text>", ["bad X word", "badword"]),
+            ("<text x='5' y='20'>bad<g>X<tspan>wor</tspan></g>d</text>", ["bad X wor d", "badword"]),
+            ("<defs><text id='w'>wo<tspan>rd</tspan></text></defs><text x='5' y='20'>bad<tref href='#w'/></text>",
+             ["wo rd bad", "word badword"]),
+            ("<defs><path id='p' d='M5 20 H95'/></defs><text x='5' y='20'>bad<textPath href='#p'>word</textPath></text>",
+             ["bad word", "badword"]),
+            ("<text x='5' y='20' xml:space='preserve'>bad\nword</text>", ["bad word"]),
+            ("<text x='5' y='20'>bad</text><text x='5' y='40'>word</text>", ["bad word"]),
+        ]
+        for body, screened in cases:
+            with self.subTest(body=body):
+                answer = Answer(status="ok")
+                words, failed = await engine.draw_sketch({"svg": head + body + "</svg>", "caption": "x"}, answer)
+                self.assertFalse(failed, words)
+                self.assertEqual(answer.screen_text, screened)
+
+    async def test_character_references_and_entities_reach_the_screen_decoded(self):
+        # cairosvg reads the SVG as XML, which turns &#97; and &#x61; into the letter and decodes the five predefined entities, so the
+        # screen gets the words the way they're drawn.
+        svg = SVG.replace("Tom &amp; Jerry", "b&#97;dword b&#x61;dword &amp; &lt; &gt; &quot; &apos;")
+        answer = Answer(status="ok")
+        words, failed = await engine.draw_sketch({"svg": svg, "caption": "x"}, answer)
+        self.assertFalse(failed, words)
+        self.assertEqual(answer.screen_text, ["badword badword & < > " + '"' + " '"])
+
     async def test_svg_that_could_reach_outside_is_refused(self):
         head = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
         refused = "The SVG uses images, reused groups, outside links, scripts, comments, or declarations."
