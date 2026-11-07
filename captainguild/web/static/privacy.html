@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy - Captain Guild</title>
+  <link rel="icon" href="/static/img/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/site.css">
+</head>
+<body class="site">
+  <header class="site-top">
+    <a class="brand" href="/"><img src="/static/img/logo.svg" alt="">Captain Guild</a>
+    <nav><a href="/docs">Docs</a><a href="/status">Status</a><a href="/privacy">Privacy</a><a class="btn primary" href="/servers">Dashboard</a></nav>
+  </header>
+  <main class="site-main">
+    <h1>Privacy</h1>
+    <p>Captain Guild runs on a machine controlled by the people who run the server you're in. This copy serves only its owner's own Discord servers. This page says what it keeps, for how long, and who can see it.</p>
+
+    <h2>What it keeps</h2>
+    <table>
+      <thead><tr><th>Data</th><th>Why</th><th>How long</th></tr></thead>
+      <tbody>
+        <tr><td>Message text, attachment names and links, and who wrote them</td><td>To log edits and deletes and let staff review a report</td><td>30 days by default, and each server can change it</td></tr>
+        <tr><td>Log entries: joins, leaves, role and name changes, voice moves, server changes, and the full text of deleted, edited, purged and pinned messages and of messages automod caught</td><td>Moderation records and log search</td><td>90 days by default, and each server can change it</td></tr>
+        <tr><td>Moderation cases: action, reason, moderator, time, and automod incidents</td><td>The server's moderation history</td><td>With no set end. Staff can void a case, which marks it and keeps it.</td></tr>
+        <tr><td>Moderation notes: text, author, time</td><td>The server's moderation history</td><td>Until staff delete them</td></tr>
+        <tr><td>Running mutes, temporary bans and lockdowns: who, who applied it, when it ends</td><td>To end each one on time</td><td>Until it ends</td></tr>
+        <tr><td>People raid mode holds: ID, name and the role put on them, and who turned raid mode on</td><td>So staff can look them over and let them go</td><td>Until they're let go, and until raid mode ends</td></tr>
+        <tr><td>Reports: who reported whom, the reason, and copies of the reported message and its files</td><td>So staff can act on a report, even if the message is deleted</td><td>Until staff delete them</td></tr>
+        <tr><td>Voice reports, voice access requests and who decided them, mini mutes, and who voted how on a mini mute</td><td>The server's voice moderation</td><td>With no set end. A mini mute's own row goes when it ends.</td></tr>
+        <tr><td>XP and level, rank card background, birthday, reminders, highlight words, game scores, message counts</td><td>The features those belong to</td><td>Until you or staff remove them. A rank card background goes 30 days after you leave.</td></tr>
+        <tr><td>Roles you held when you left</td><td>To give them back when you return</td><td>Until you return, or 30 days by default, and each server can change it</td></tr>
+        <tr><td>Giveaways: who entered and who won</td><td>To run the draw and keep its result</td><td>With no set end. Your entries go when you delete them with <code>/my_data</code>.</td></tr>
+        <tr><td>Starboard: a preview of each starred message, its author, and who starred it</td><td>To keep the board's count and numbers</td><td>Until the post leaves the board</td></tr>
+        <tr><td>Suggestions: their text, the author's name and avatar link, the vote totals and the decision</td><td>The server's record of what was suggested</td><td>Until staff delete them</td></tr>
+        <tr><td>Who reacted on a reaction role message, and who had the bot repeat a message</td><td>To hand out roles once, and to tell staff who sent what</td><td>A reaction record goes when the message stops handing out roles. Who had the bot repeat a message has no set end.</td></tr>
+        <tr><td>Tags, triggers, posted messages and their earlier versions, saved messages, scheduled posts, server settings, and who changed them</td><td>The server's setup and its change history</td><td>Until staff delete them. The change history keeps each server's newest 5,000 entries.</td></tr>
+        <tr><td>Which roles could read a deleted channel</td><td>So log search shows what was said there only to those who could read it</td><td>As long as that channel's log entries last</td></tr>
+        <tr><td>Backup snapshots: a copy of a server's stored data, and copies of its XP board</td><td>To put a server back after a mistake</td><td>The newest 14 scheduled snapshots by default, and each server can change it. Staff delete the ones taken by hand. Someone's rows in a snapshot stay until that snapshot goes, except levels, which come out of the XP copies when deleted.</td></tr>
+        <tr><td>Which commands you ran, counted by day</td><td>Command use numbers for staff</td><td>90 days</td></tr>
+        <tr><td>Proposals: their text, who submitted them and the vote totals</td><td>The server's record of what was put to a vote</td><td>Until staff delete them. Who voted which way stays on Discord, as reactions on the post, and isn't stored.</td></tr>
+        <tr><td>Your Discord ID, name and avatar link when you sign in to the dashboard</td><td>To keep you signed in</td><td>14 days from sign-in</td></tr>
+      </tbody>
+    </table>
+    <p>You sign in with a private link from the bot's <code>/dashboard</code> command, which works once and expires after five minutes. A site set up to use Discord's own sign-in button asks Discord only who you are, then revokes the token right away and never stores it. No IP addresses are stored.</p>
+
+    <h2>Who can see it</h2>
+    <p>Staff of the server the data belongs to, through the dashboard and the log channels they set up, and the person who runs the machine. It isn't sold, shared with anyone else, or used to train machine learning models.</p>
+
+    <h2>What goes to other services</h2>
+    <p>A lookup sends what you typed to the service that answers it. <code>/games fortnite</code> sends the player's name and platform to Fortnite-API, and <code>/games roblox</code> sends the user name to Roblox. The full list of outside services is in the project's <code>THIRD_PARTY.md</code>.</p>
+
+    <h2>How it's protected</h2>
+    <p>The databases and their scheduled copies are encrypted at rest with SQLCipher (AES-256). The key is held apart from them. The site forces HTTPS.</p>
+
+    <h2>Getting your data removed</h2>
+    <p>Type <code>/my_data</code> in Discord. The private link opens a page that shows what the bot holds about you, gives you a copy, and deletes your birthday, highlights, reminders, levels, giveaway entries, game scores, usage counts and message counts for voice access. For anything else, open a ticket with the server's staff or contact the person who runs the bot. Moderation records stay when staff need them to keep the server safe, and stored messages and log entries stay until their retention ends.</p>
+
+    <h2>Changes</h2>
+    <p>This page changes when the bot's handling of data changes. The history is in the project's public source.</p>
+    <div class="site-foot"><a href="/docs">Docs</a><a href="/status">Status</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a></div>
+  </main>
+</body>
+</html>

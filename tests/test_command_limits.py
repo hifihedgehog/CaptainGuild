@@ -1,0 +1,62 @@
+"""Discord refuses the whole command list if one entry breaks a limit, so these hold for everything the bot registers."""
+import re
+
+import discord
+from discord import app_commands
+
+from captainguild.modules import load_all
+from tests.fakes import BotTest
+
+NAME = re.compile(r"^[-_'\wऀ-ॿ฀-๿]{1,32}$")
+GLOBAL_CHAT_COMMANDS = 100
+CONTEXT_MENUS_PER_TYPE = 5
+PER_LEVEL = 25
+COMMAND_CHARACTERS = 8000
+
+
+def characters(command: dict) -> int:
+    total = len(command.get("name", "")) + len(command.get("description", ""))
+    for option in command.get("options", []):
+        total += characters(option)
+        for choice in option.get("choices", []) or []:
+            total += len(choice["name"]) + len(str(choice["value"]))
+    return total
+
+
+class CommandLimitsTest(BotTest):
+    modules = load_all()
+
+    def check(self, command: dict, path: str) -> None:
+        self.assertRegex(command["name"], NAME, path)
+        self.assertEqual(command["name"], command["name"].lower(), f"{path}: names must be lowercase")
+        self.assertTrue(1 <= len(command.get("description", "x")) <= 100, f"{path}: description is {len(command.get('description', ''))} characters")
+        options = command.get("options", [])
+        self.assertLessEqual(len(options), PER_LEVEL, f"{path}: too many options")
+        seen_optional = False
+        for option in options:
+            child = f"{path} {option['name']}"
+            if option["type"] in (1, 2):
+                self.check(option, child)
+                continue
+            self.assertRegex(option["name"], NAME, child)
+            self.assertTrue(1 <= len(option["description"]) <= 100, f"{child}: description is {len(option['description'])} characters")
+            if option.get("required"):
+                self.assertFalse(seen_optional, f"{child}: required option after an optional one")
+            else:
+                seen_optional = True
+
+    async def test_every_registered_command_fits_discords_limits(self):
+        commands = self.bot.tree.get_commands()
+        chat = [c for c in commands if isinstance(c, app_commands.Group) or isinstance(c, app_commands.Command)]
+        menus = [c for c in commands if isinstance(c, app_commands.ContextMenu)]
+        self.assertLessEqual(len(chat), GLOBAL_CHAT_COMMANDS)
+        self.assertLessEqual(len([m for m in menus if m.type == discord.AppCommandType.user]), CONTEXT_MENUS_PER_TYPE)
+        self.assertLessEqual(len([m for m in menus if m.type == discord.AppCommandType.message]), CONTEXT_MENUS_PER_TYPE)
+        for command in chat:
+            data = command.to_dict(self.bot.tree)
+            self.check(data, data["name"])
+            self.assertLessEqual(characters(data), COMMAND_CHARACTERS, f"{data['name']}: too many characters in total")
+
+    async def test_prefix_and_slash_names_agree_and_nothing_collides(self):
+        names = [c.qualified_name for c in self.bot.commands]
+        self.assertEqual(len(names), len(set(names)))

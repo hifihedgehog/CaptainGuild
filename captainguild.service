@@ -1,0 +1,62 @@
+# Hardened systemd unit for running Captain Guild as its own unprivileged user.
+[Unit]
+Description=Captain Guild Discord bot
+Wants=network-online.target
+After=network-online.target
+# Restart= can start the bot at most 20 times in 300 seconds at RestartSec=15, so this limit stops only a faster
+# loop. A bot waiting out a Discord outage must never reach it, because a tripped limit stays failed until someone acts.
+StartLimitIntervalSec=300
+StartLimitBurst=25
+
+[Service]
+Type=simple
+User=captainguild
+Group=captainguild
+WorkingDirectory=/opt/captainguild
+# Read by systemd as root before it drops privileges: keep it root-owned, mode 600.
+EnvironmentFile=/etc/captainguild/captainguild.env
+StateDirectory=captainguild
+StateDirectoryMode=0700
+ExecStart=/opt/captainguild/venv/bin/python -m captainguild --public-url https://your.site --port 8893 --data /var/lib/captainguild
+Restart=on-failure
+RestartSec=15
+# 78: Discord refused the token or a required intent, or the key doesn't open the database. A restart can't fix those.
+RestartPreventExitStatus=78
+LimitNOFILE=8192
+
+# --- sandboxing ---
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=yes
+PrivateIPC=yes
+RemoveIPC=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+# No AF_NETLINK: without it getaddrinfo takes both IPv4 and IPv6 as up, and still sorts unreachable addresses last.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+UMask=0077
+MemoryMax=2G
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target
