@@ -359,7 +359,7 @@ class AnswersTest(ProposalCase):
         await self.propose()
         await self.configure(moderator_role=None)
         self.slash("proposal", "recheck", user_id=self.owner_id)
-        await self.settle(0.3)
+        await self.settle()  # returns once the command finishes, however busy the machine is
         text = json.dumps(self.answers())
         self.assertIn("no moderator role", text)
         self.assertNotIn("Checked", text)
@@ -376,7 +376,7 @@ class AnswersTest(ProposalCase):
             return await real(channel_id, message_id, emoji, **kwargs)
         self.bot.ops.reaction_users = refuse
         self.slash("proposal", "recheck", user_id=self.owner_id)
-        await self.settle(0.3)
+        await self.settle()  # returns once the command finishes, however busy the machine is
         text = json.dumps(self.answers())
         self.assertIn("Counted 1 of 2 open proposals", text)
         self.errors.lines.clear()

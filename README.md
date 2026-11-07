@@ -22,13 +22,23 @@ Captain Guild is a self-hosted Discord bot with a web dashboard. One process run
 | Reaction roles | Roles from reactions, buttons or menus, with limits, one-only groups, verify gates and timed roles. Put a message's emoji in a new order and its reactions follow. |
 | Role rules | Roles that follow from the roles a member holds: up to ten conditions per rule, roles to add and remove, and rules that keep a role in sync. A preview shows who would change before you save. `/mass_mention` pings every member who holds all of the roles you name. |
 | Posts | An editor with live preview, a version history for each post with one-click revert, scheduled posting, and a tool that reposts messages another bot wrote so you can edit them. |
+| Collaborative messages | Posts the bot makes that the people and roles you name can edit from the right-click menu, with every earlier text kept and revertible. Moving or copying one carries its history and its collaborators along. |
+| Message mover | Members move or copy their own messages to another channel or thread, reposted under their name and picture, and edit or delete the copy later. |
 | Tags and triggers | Custom commands and automatic replies in a small template language with variables, math, conditions and embeds. |
 | Voice | Temporary mutes and deafens, voice access requests with requirements, a trusted tier for short mutes with an optional vote, and roles held while in a channel. |
 | Suggestions and proposals | Members suggest and vote, and staff decide. A bigger change goes to two votes on one post, one by members and one by moderators, with a discussion thread, and it passes only if both pass. |
 | Community | Welcome and goodbye messages, birthdays, XP levels with rank cards and reward roles, starboard, sticky messages, highlights, reminders, giveaways and polls. |
 | Alerts | Twitch streams, YouTube videos, free games, game deals, and scheduled feeds with role mentions. |
+| Translation and conversions | `/translate`, a Translate menu, flag reactions and messages that start with "translate" translate between 36 languages with DeepL. Currencies and units convert by command or when a message asks, as in "20 bucks in euros". `/export_emojis` downloads the server's emojis. |
+| Bookmarks | Members right-click a message and get a copy of it in their DMs, with a button that deletes it. |
+| RSS feeds | Any RSS or Atom feed, read every minute and posted in a channel under the feed's own name. |
+| Channel archive | Copies a channel or a forum, threads included, into another channel under each author's name, and picks up where it stopped. |
+| Entry giveaways | A channel or forum where each member's first message is their one entry, and a draw that gives each member one chance. |
+| Wiki answers | Answers members' questions from copies of the wikis and documentation sites you name, with links to the pages it drew from. It also plans projects with a sketch, searches the web, writes printable OpenSCAD models, and answers new forum posts. It runs on the host's own Anthropic API key, in the servers the host names, with a daily limit for each person and a monthly budget a server can set. |
 
 Each server sets all of this on its own dashboard, and a Quick setup page covers the common choices. The [docs page](captainguild/web/static/docs.html) lists every command and who can run it.
+
+Collaborative messages, the message mover, translation, bookmarks, RSS feeds, the channel archive, entry giveaways and wiki answers are command packs. A server sees a pack's commands only once someone who manages the server switches it on from the dashboard.
 
 ## Your data
 
@@ -62,6 +72,8 @@ You need Python 3.12 or newer and a reverse proxy with HTTPS. The pinned install
 6. Open your site and click Dashboard. Discord asks you to confirm who you are, and then you pick a server.
 
 Without a client secret, the site signs people in with a private link from the bot's `/dashboard` command instead.
+
+Wiki answers needs an Anthropic API key in `.env` as `ANTHROPIC_API_KEY`, and the bot started with `--answers-servers` followed by the IDs of the servers that may use it, separated by commas. Its sketches need the cairo library on the machine, and its models need `openscad`, `xvfb-run` and `prlimit`.
 
 ### Getting the data back
 

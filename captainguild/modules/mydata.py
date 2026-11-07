@@ -37,6 +37,8 @@ SECTIONS = (
     Section("games", "Game scores", (("toproll_scores", "user_id"),), "fun"),
     Section("usage", "Command use counts", (("command_uses", "user_id"),)),
     Section("voice_counts", "Message counts for voice access", (("voice_message_counts", "user_id"),), "voice"),
+    Section("translation", "Translation language", (("translate_languages", "user_id"),)),
+    Section("entrygiveaways", "Entries in giveaway channels", (("entry_giveaway_entries", "user_id"),), "entrygiveaways"),
 )
 BY_KEY = {section.key: section for section in SECTIONS}
 
@@ -53,6 +55,10 @@ KEPT = {
     "tag_shares": "the server's commands, which staff can reassign", "proposals": "a public vote and the server's record of it", "suggestions": "a public post staff decided on",
     "echo_messages": "who sent an echoed message, for staff", "starboard_entries": "a public post", "starboard_stars": "a public reaction", "rr_seen": "a public reaction", "voicelink_held": "ends when they leave the voice channel",
     "web_sessions": "signing out ends it, on this device or on all of them", "autorole_waiting": "ends when they pass the rules screen or leave",
+    "collab_editors": "who may edit a post, which its collaborators and staff set", "moved_messages": "a public post, which whoever moved it can take down with Delete Moved Message",
+    "rss_feeds": "the server's setup", "entry_giveaway_setup": "the server's setup", "entry_giveaway_closed": "the server's setup",
+    "archive_jobs": "the server's record of channel copies", "archive_cursors": "where each channel copy got to",
+    "answer_uses": "counts toward the server's daily limit on AI answers, and goes after a day", "answer_costs": "the host's record of what each AI answer cost, kept 70 days",
 }
 
 

@@ -39,7 +39,7 @@ from discord.ext import commands, tasks
 from ..core import access, delivery
 from ..core.messages import component_view, unsigned
 from ..core.module import Module, requires, staff_only
-from ..core.ops import MessageGone, OpsError
+from ..core.ops import MessageGone, OpsError, upload_limit
 from ..core.perms import MODULE as COMMANDS_MODULE
 from ..core.tagscript import RegexGuard
 from ..core.usage import plain_error
@@ -1376,7 +1376,7 @@ class Reports(Module):
             return
         self._start_cooldown(interaction.user)
         await interaction.response.defer(ephemeral=True)
-        limit = getattr(interaction, "filesize_limit", None) or interaction.guild.filesize_limit
+        limit = getattr(interaction, "filesize_limit", None) or upload_limit(interaction.guild)
         draft = self._message_draft(message, interaction.user, reason, self._message_files(message), limit)
         await self._file_from_interaction(interaction, draft)
 
@@ -1419,7 +1419,7 @@ class Reports(Module):
         draft = Draft(
             guild=interaction.guild, kind="user", reporter=interaction.user, target=member, reason=reason, filed_in=channel_id,
             jump_url=_message_url(interaction.guild_id, channel_id, interaction.id) if channel_id else None,
-            attachments=[image] if image else [], file_limit=getattr(interaction, "filesize_limit", None) or interaction.guild.filesize_limit,
+            attachments=[image] if image else [], file_limit=getattr(interaction, "filesize_limit", None) or upload_limit(interaction.guild),
         )
         await self._file_from_interaction(interaction, draft)
 
@@ -1445,7 +1445,7 @@ class Reports(Module):
         draft = Draft(
             guild=interaction.guild, kind=PLACE, reporter=interaction.user, target=NO_ONE_NAMED, reason=reason, filed_in=channel_id,
             jump_url=_message_url(interaction.guild_id, channel_id, interaction.id) if channel_id else None,
-            attachments=[image] if image else [], file_limit=getattr(interaction, "filesize_limit", None) or interaction.guild.filesize_limit,
+            attachments=[image] if image else [], file_limit=getattr(interaction, "filesize_limit", None) or upload_limit(interaction.guild),
         )
         await self._file_from_interaction(interaction, draft)
 
@@ -1479,7 +1479,7 @@ class Reports(Module):
         refusal = refusal or left and self._wait_text(left) or (None if reason else ("Write what happened after their name." if member is not None else "Write what happened."))
         if not refusal:
             self._start_cooldown(ctx.author)
-        evidence = [] if refusal else await copy_attachments(list(ctx.message.attachments)[:1], ctx.guild.filesize_limit, self._held)
+        evidence = [] if refusal else await copy_attachments(list(ctx.message.attachments)[:1], upload_limit(ctx.guild), self._held)
         jump_to = ctx.message.id if member is not None else await self._message_before(ctx)
         removed = await _delete_quietly(ctx.message)
         if refusal:

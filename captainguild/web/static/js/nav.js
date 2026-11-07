@@ -38,13 +38,21 @@ export const NAV = [
     { key: 'gamealerts', name: 'Game alerts', icon: 'gamepad-2' },
     { key: 'twitch', name: 'Twitch', icon: 'twitch' },
     { key: 'youtube', name: 'YouTube', icon: 'youtube' },
+    { key: 'rss', name: 'RSS feeds', icon: 'rss' },
   ] },
   { title: 'Utility', items: [
     { key: 'greetings', name: 'Greetings', icon: 'door-open' },
     { key: 'starboard', name: 'Starboard', icon: 'star' },
     { key: 'embeds', name: 'Embeds', icon: 'image' },
+    { key: 'collaborative', name: 'Collaborative messages', icon: 'users' },
+    { key: 'mover', name: 'Message mover', icon: 'corner-down-right' },
     { key: 'suggestions', name: 'Suggestions', icon: 'lightbulb' },
     { key: 'proposals', name: 'Proposals', icon: 'thumbs-up', staff: true },
+    { key: 'translation', name: 'Translate & convert', icon: 'repeat' },
+    { key: 'bookmarks', name: 'Bookmarks', icon: 'inbox' },
+    { key: 'entrygiveaways', name: 'Entry giveaways', icon: 'gift' },
+    { key: 'channelarchive', name: 'Channel archive', icon: 'copy' },
+    { key: 'answers', name: 'Wiki answers', icon: 'book-open' },
   ] },
 ];
 

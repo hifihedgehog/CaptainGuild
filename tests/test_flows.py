@@ -102,10 +102,15 @@ class RolePingTest(GatewayTest):
         self.assertTrue(await asyncio.wait_for(self.ping(), 2), "the next announcement to this role gets its turn")
 
     async def test_a_cancel_while_turning_it_back_off_lets_go_of_the_lock(self):
-        forever = asyncio.Event()
-        self.turning_back_does(forever.wait)
+        forever, reached = asyncio.Event(), asyncio.Event()
+
+        async def stuck() -> None:
+            reached.set()
+            await forever.wait()
+
+        self.turning_back_does(stuck)
         first = asyncio.ensure_future(self.ping())
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(reached.wait(), 5)  # cancelled while turning it back off, however busy the machine is
         first.cancel()
         await asyncio.gather(first, return_exceptions=True)
         self.assertEqual(await self.held(), 1)

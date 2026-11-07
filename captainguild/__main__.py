@@ -4,6 +4,13 @@
 
 .env holds secrets only. Everything else comes from these flags or the dashboard. `--demo` runs the dashboard alone on sample
 data, with no Discord connection and no sign-in, for trying pages out and for the browser checks.
+
+`--term-matching` and `--term-configs` name an outside module and its folder of word lists, which screen what Wiki answers sends
+and posts. They're flags rather than a dashboard setting because the module is code the bot runs. core/answers/screening.py says
+what the module has to provide.
+
+`--answers-servers` lists the servers where Wiki answers may spend the host's AI key, by ID. Without it, no server can switch the
+pack on.
 """
 from __future__ import annotations
 
@@ -21,6 +28,7 @@ from dotenv import load_dotenv
 
 from . import __version__
 from .bot import Bot
+from .core.answers import screening, servers
 from .core.invite import ADD_PERMISSIONS, invite_url  # noqa: F401  (ADD_PERMISSIONS is read through this module)
 from .crypto import Keyring, decode_master_key
 from .db import Database, DatabaseKeyError
@@ -135,6 +143,18 @@ async def run_demo(args: argparse.Namespace) -> None:
             await closer()
 
 
+def load_term_matching(module_path: str | None, folder: str | None) -> None:
+    """Load the word lists the flags name. One that doesn't load leaves each server screened by its automod word rule, and the Wiki answers page says why."""
+    if not module_path or not folder:
+        return
+    try:
+        screening.use(screening.load(module_path, folder))
+        log.info("AI answers are screened with the word lists in %s", folder)
+    except screening.ScreeningError as error:
+        screening.use(None, str(error))
+        log.error("The term-matching module didn't load, so each server's automod word rule screens AI answers instead. %s", error)
+
+
 def main() -> None:
     os.umask(0o077)  # what this program writes stays readable by its own user alone, whatever the shell's default is
     parser = argparse.ArgumentParser(prog="captainguild")
@@ -143,13 +163,23 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8893)
     parser.add_argument("--data", default="data", help="Folder for the databases")
     parser.add_argument("--demo", action="store_true", help="Run the dashboard alone on sample data")
+    parser.add_argument("--term-matching", metavar="FILE", help="A term-matching module whose word lists screen AI answers, loaded once at start")
+    parser.add_argument("--term-configs", metavar="FOLDER", help="That module's folder of word lists, one <server ID>.json for each server")
+    parser.add_argument("--answers-servers", metavar="IDS", default="", help="The servers where Wiki answers may spend the AI key, by ID, separated by commas")
     args = parser.parse_args()
+    if bool(args.term_matching) != bool(args.term_configs):
+        parser.error("--term-matching and --term-configs go together")
+    try:
+        servers.use(servers.parse(args.answers_servers))
+    except ValueError as error:
+        parser.error(f"--answers-servers: {error}")
     load_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("discord").setLevel(logging.WARNING)
     if args.demo:
         asyncio.run(run_demo(args))
         return
+    load_term_matching(args.term_matching, args.term_configs)
     if not args.public_url:
         sys.exit("--public-url is required")
     try:

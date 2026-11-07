@@ -26,7 +26,7 @@ function localInput(seconds) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 const fromLocalInput = (text) => (text ? new Date(text).getTime() / 1000 : null);
-const SOURCES = { dashboard: 'Dashboard', command: 'Command', schedule: 'Scheduled', adopted: 'Reposted', found: 'Found' };
+const SOURCES = { dashboard: 'Dashboard', command: 'Command', schedule: 'Scheduled', adopted: 'Reposted', found: 'Found', collaborative: 'Collaborative' };
 
 function JumpLink({ url, label = 'Open in Discord' }) {
   return html`<a class="icon-btn" href=${url} target="_blank" rel="noopener noreferrer" aria-label=${label} title=${label}><${Icon} name="external-link" /></a>`;

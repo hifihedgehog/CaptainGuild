@@ -14,7 +14,9 @@ from captainguild.modules.logs import Logs
 from captainguild.modules.moderation import Moderation
 from captainguild.modules.mydata import BY_KEY, KEPT, SECTIONS, MyData
 from captainguild.modules.utilities import Utilities
+from captainguild.modules.entrygiveaways import EntryGiveaways
 from captainguild.modules.voice import Voice
+from captainguild.modules.translation import Translation
 from captainguild.web.api import User
 from captainguild.web.app import build_app
 from tests.fakes import BotTest
@@ -50,7 +52,7 @@ class EveryTableTest(BotTest):
 
 
 class Case(BotTest):
-    modules = [Greetings, Levels, Logs, Moderation, Utilities, Fun, Voice, MyData]
+    modules = [Greetings, Levels, Logs, Moderation, Utilities, Fun, Voice, Translation, EntryGiveaways, MyData]
 
     async def asyncSetUp(self):
         await super().asyncSetUp()

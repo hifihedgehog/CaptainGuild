@@ -25,6 +25,7 @@ NOT_POINTERS = {
     ("twitch_subs", "stream_id"): "A Twitch login.",
     ("twitch_subs", "live_id"): "A Twitch stream number.",
     ("youtube_subs", "youtube_id"): "A YouTube channel.",
+    ("moved_messages", "webhook_id"): "The Discord webhook that posted the copy.",
 }
 
 

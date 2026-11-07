@@ -22,8 +22,11 @@ class FakeAttachment:
         self.url = f"https://cdn.discordapp.com/attachments/1/{self.id}/{filename}?ex=1&is=2&hm=3"
         self.content_type = "image/png"
 
-    async def to_file(self):
-        return discord.File(__file__, filename=self.filename)
+    def is_spoiler(self):
+        return self.filename.startswith("SPOILER_")
+
+    async def to_file(self, *, spoiler=False):
+        return discord.File(__file__, filename=self.filename, spoiler=spoiler)
 
 
 class ReactionRolesStub:

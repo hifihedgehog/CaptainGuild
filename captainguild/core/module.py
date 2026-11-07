@@ -44,6 +44,13 @@ class Module(commands.Cog):
     # The most rows a server can have in a table, as the save paths enforce them. A restore holds to the same numbers, since a file passes through none of those paths and one server's rows can slow a feature for all of them.
     row_limits: ClassVar[dict[str, int]] = {}
 
+    # Settings only the server's owner or an Administrator changes, such as ones that spend the bot host's money. The dashboard refuses anyone else, and so must the commands that change them.
+    admin_fields: ClassVar[frozenset[str]] = frozenset()
+
+    def settings_refusal(self, guild_id: int, before: dict, after: dict) -> dict[str, str] | None:
+        """A change nobody in this server can make, as {field: the reason}, or None. The dashboard refuses it before saving, for the owner too."""
+        return None
+
     def __init__(self, bot: Any) -> None:
         self.bot = bot
         self.db = bot.db

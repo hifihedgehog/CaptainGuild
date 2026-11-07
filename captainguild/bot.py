@@ -144,6 +144,8 @@ class Bot(commands.Bot):
         # A command pack's slash commands and menus, by module key. They go into each server that switches the pack on.
         self.pack_commands: dict[str, list[Any]] = {}
         self._pack_locks: dict[int, asyncio.Lock] = {}
+        self._pack_keys: dict[str, str] = {}  # each pack's Python module, to its key
+        self.tree.pack_of = lambda command: self._pack_keys.get(getattr(command, "module", None) or "")
         self.add_check(self._check_command)
         self.tree.on_error = self._on_tree_error
         self.after_invoke(self._after_command)
@@ -164,6 +166,8 @@ class Bot(commands.Bot):
                 self.settings.register(module.key, module.schema)
             await self.db.migrate(f"module:{module.key}", list(module.migrations))
             await self.message_db.migrate(f"module:{module.key}", list(module.message_migrations))
+            if module.command_pack:
+                self._pack_keys[type(module).__module__] = module.key  # so the tree holds its commands apart from the start
             await self.add_cog(module)
             self.modules.append(module)
         for module in self.modules:
@@ -310,7 +314,7 @@ class Bot(commands.Bot):
             self.sync_server_soon(guild_id)
 
         for module in packs.values():
-            self.pack_commands[module.key] = []
+            self.pack_commands[module.key] = list(self.tree.held.get(module.key, []))
             self.settings.listen(module.key, switched)
         for kind in (discord.AppCommandType.chat_input, discord.AppCommandType.message, discord.AppCommandType.user):
             for command in self.tree.get_commands(type=kind):

@@ -15,6 +15,7 @@ from unittest import mock
 import discord
 
 from captainguild.core.module import required_permissions
+from captainguild.core.ops import upload_limit
 from captainguild.core.ops import DiscordOps, OpsError
 from captainguild.modules import logs as logs_module
 from captainguild.modules.logs import EVENT_KEYS, Logs, csv_safe, export_code, read_import, settings_from_import
@@ -102,11 +103,14 @@ class Base(BotTest):
 
 class StoreTest(Base):
     async def test_a_busy_channel_is_written_in_one_batch(self):
-        for number in range(500):
-            await self.send(f"message {number}")
-        self.assertEqual(await self.message_db.scalar("SELECT COUNT(*) FROM messages"), 0)
-        with mock.patch.object(self.message_db, "many", wraps=self.message_db.many) as many:
-            await self.logs.flush()
+        # The timer stays off, so only the flush below writes. On a loaded machine the count read outlasts the quick timer, which then
+        # writes the batch before `many` is watched.
+        with mock.patch.object(logs_module, "FLUSH_SECONDS", 3600):
+            for number in range(500):
+                await self.send(f"message {number}")
+            self.assertEqual(await self.message_db.scalar("SELECT COUNT(*) FROM messages"), 0)
+            with mock.patch.object(self.message_db, "many", wraps=self.message_db.many) as many:
+                await self.logs.flush()
         self.assertEqual(many.call_count, 1)
         self.assertEqual(await self.message_db.scalar("SELECT COUNT(*) FROM messages"), 500)
 
@@ -199,13 +203,15 @@ class StoreTest(Base):
         self.assertEqual([row["event"] for row in await self.logs.user_log_entries(self.guild.id, self.member.id, kind="join")], ["join"])
 
     async def test_a_failed_write_loses_nothing(self):
-        await self.send("keep me")
-        await self.logs.on_member_join(self.member)
-        with mock.patch.object(self.message_db, "many", side_effect=RuntimeError("disk full")):
-            with self.assertRaises(RuntimeError):
-                await self.logs.flush()
-        self.assertEqual(await self.message_db.scalar("SELECT COUNT(*) FROM messages"), 0)
-        await self.logs.flush()
+        # The timer stays off, so the flushes below are the only writes, as in the batching test above.
+        with mock.patch.object(logs_module, "FLUSH_SECONDS", 3600):
+            await self.send("keep me")
+            await self.logs.on_member_join(self.member)
+            with mock.patch.object(self.message_db, "many", side_effect=RuntimeError("disk full")):
+                with self.assertRaises(RuntimeError):
+                    await self.logs.flush()
+            self.assertEqual(await self.message_db.scalar("SELECT COUNT(*) FROM messages"), 0)
+            await self.logs.flush()
         self.assertEqual(await self.message_db.scalar("SELECT COUNT(*) FROM messages"), 1)
         self.assertEqual(await self.message_db.scalar("SELECT COUNT(*) FROM log_entries"), 1)
 
@@ -495,9 +501,16 @@ class DeletedImageTest(Base):
 
     async def test_only_images_and_only_a_few_and_only_what_fits(self):
         files = [attachment(f"{n}.png") for n in range(6)]
-        message = await self.send("many", attachments=[attachment("clip.mp4", content_type="video/mp4"), attachment("huge.png", size=self.guild.filesize_limit + 1), *files])
+        message = await self.send("many", attachments=[attachment("clip.mp4", content_type="video/mp4"), attachment("huge.png", size=upload_limit(self.guild) + 1), *files])
         await self.delete(message.id)
         self.assertEqual(self.downloads, ["0.png", "1.png", "2.png", "3.png"])
+
+    async def test_an_unboosted_server_copies_images_up_to_discords_default(self):
+        """Discord raised the default upload limit to 20 MiB on September 3, 2026. discord.py 2.7.1 still says 10 below boost level 2."""
+        self.assertEqual(self.guild.filesize_limit, 10 * 1024 * 1024)
+        message = await self.send("big", attachments=[attachment("fifteen.png", size=15 * 1024 * 1024)])
+        await self.delete(message.id)
+        self.assertEqual(self.downloads, ["fifteen.png"])
 
     async def test_a_spoiler_stays_a_spoiler(self):
         message = await self.send("careful", attachments=[attachment("SPOILER_end.png")])

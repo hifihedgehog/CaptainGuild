@@ -111,9 +111,11 @@ KIND_SCHEDULED, KIND_MANUAL, KIND_BEFORE_IMPORT = "scheduled", "manual", "before
 SPECIAL_TABLES = {"guild_settings", "backup_snapshots"}
 # youtube_state is the polling place for one YouTube channel, shared by every server following it, and the next poll rebuilds it.
 # voicelink_held, autorole_waiting, raid_modes and raid_holds say how things stand right now, and an older picture would take roles from people or hand them out. Voice states, the rules screen and staff keep them right.
-GLOBAL_TABLES = {"kv", "web_sessions", "schema_steps", "sqlite_sequence", "youtube_state", "voicelink_held", "autorole_waiting", "raid_modes", "raid_holds"}
+# wiki_copies and wiki_pages hold copies of public wikis, shared by every server that reads the same one, and the next update downloads them again.
+GLOBAL_TABLES = {"kv", "web_sessions", "schema_steps", "sqlite_sequence", "youtube_state", "voicelink_held", "autorole_waiting", "raid_modes", "raid_holds", "wiki_copies", "wiki_pages"}
 # A history keeps what's in it when a backup comes back: only what's missing gets added. Replacing the activity log would also let a file erase who changed what.
-MERGED_TABLES = {"activity", "timers", "command_uses"}
+# The same goes for what AI answers cost and how many each person asked for today: an older file must not lower either.
+MERGED_TABLES = {"activity", "timers", "command_uses", "answer_costs", "answer_uses", "answer_auto_days"}
 ACTIVITY_JSON_COLUMNS = ("before_data", "after_data")
 _SECRET_COLUMN = re.compile(r"(?:^|_)(?:token|secret|password|api_key)(?:$|_)", re.IGNORECASE)
 _DIGITS = re.compile(r"-?[0-9]{1,20}")

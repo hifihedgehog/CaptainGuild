@@ -603,10 +603,13 @@ def _check_bypass_roles(req: Req, guild: Any, member: Any, before: dict, after: 
 def _check_reach(req: Req, module: str, before: dict, after: dict) -> None:
     """What a form can't do for someone. Manage Server doesn't reach as far in Discord as these settings do, so they'd be a way to give yourself more.
 
-    Below the owner and Administrators, nobody turns on elevated roles, changes who counts as staff, shares a permission they don't hold, names a channel they can't see or post in, saves a ping they couldn't send, adds a role at or above their own highest, or copies what's said in channels they can't read. Nobody at all gives @everyone a power, or sets the bot up to hand out a role above its own.
+    Below the owner and Administrators, nobody turns on elevated roles, changes who counts as staff, shares a permission they don't hold, names a channel they can't see or post in, saves a ping they couldn't send, adds a role at or above their own highest, or copies what's said in channels they can't read. Nobody at all gives @everyone a power, or sets the bot up to hand out a role above its own, or makes a change the feature's `settings_refusal` names.
     """
     _refuse_everyone(req, module, before, after)
     feature = req.bot.module(module)
+    refusal = feature.settings_refusal(req.guild_id, before, after) if feature is not None else None
+    if refusal:
+        raise ValidationError(refusal)
     guild = req.bot.get_guild(req.guild_id)
     if feature is not None and guild is not None:
         had = feature.roles_given(before)
@@ -622,6 +625,9 @@ def _check_reach(req: Req, module: str, before: dict, after: dict) -> None:
         return
     if module == COMMANDS_MODULE and bool(before.get("elevated_roles")) != bool(after.get("elevated_roles")):
         raise ValidationError({"elevated_roles": access.ONLY_ADMINS})
+    for name in sorted(feature.admin_fields if feature is not None else ()):
+        if before.get(name) != after.get(name):
+            raise ValidationError({name: access.ONLY_ADMINS})
     was_staff = _staff_roles(req, module, before)
     for field, roles in _staff_roles(req, module, after).items():
         if roles != was_staff.get(field, set()):

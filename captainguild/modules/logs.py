@@ -37,7 +37,7 @@ from ..core import access
 from ..core.durations import humanize, ordinal
 from ..core.messages import DESCRIPTION_MAX, FIELD_NAME_MAX, FIELD_VALUE_MAX, FIELDS_MAX, FOOTER_MAX, TITLE_MAX, TOTAL_MAX, embed_size
 from ..core.module import Module, requires
-from ..core.ops import OpsError
+from ..core.ops import OpsError, upload_limit
 from ..core.perms import MODULE as COMMANDS_MODULE
 from ..core.validate import Field, Invalid, Schema, ValidationError, boolean, choice, integer, list_of, optional, snowflake, snowflakes, text
 from ..web.api import ApiError, safe_json
@@ -1413,7 +1413,7 @@ class Logs(Module):
         """The images worth copying from a deleted message. A copy stays in memory until it's posted, and posts go out one every couple of seconds, so copies being fetched count along with copies waiting. In a flood the entries still go out, without the copies."""
         if self.bot.logs.queued_files() + self._copies_coming >= MAX_QUEUED_COPIES:
             return []
-        limit = guild.filesize_limit
+        limit = upload_limit(guild)
         chosen, total = [], 0
         for attachment in attachments:
             size = attachment.get("size") or 0

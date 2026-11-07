@@ -180,6 +180,9 @@ class DemoOps:
     async def find_thread(self, guild_id: int, channel_id: int) -> bool:
         return any(c["id"] == channel_id for c in self.channels)
 
+    async def place_state(self, guild_id: int, channel_id: int) -> str:
+        return "here" if await self.find_thread(guild_id, channel_id) else "gone"
+
     def known_thread(self, guild_id: int, channel_id: int) -> Any:
         return None
 
@@ -424,6 +427,24 @@ async def _seed_samples(bot: Bot) -> None:
         (GUILD, USER, "Demo Admin", "Add a channel for screenshots.", channels["suggestions"], now - 7200),
     )
     await db.run("INSERT INTO tags (guild_id, name, content, owner_id, created_at, updated_at) VALUES (?, 'rules', 'Read the rules channel first.', ?, ?, ?)", (GUILD, USER, now, now))
+    # A collaborative message with an earlier text, and the people and role who can edit it.
+    guide = messages.clean_payload({"content": "Setup guide: level the bed, then load the filament."})
+    guide_id, _ = await post("help-desk", guide, "collaborative")
+    posted = await db.scalar("SELECT id FROM posted_messages WHERE guild_id = ? AND message_id = ?", (GUILD, guide_id))
+    first = messages.clean_payload({"content": "Setup guide: level the bed."})
+    await db.many(
+        "INSERT INTO posted_versions (guild_id, posted_id, number, payload, note, saved_at, saved_by, saved_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [(GUILD, posted, 1, json.dumps(first), "Posted", now - 7200, USER, "Demo Admin"), (GUILD, posted, 2, json.dumps(guide), "Edited", now - 3600, USER + 1, "Sample Member")],
+    )
+    await db.run("INSERT INTO collab_posts (guild_id, posted_id, created_at) VALUES (?, ?, ?)", (GUILD, posted, now - 7200))
+    await db.many("INSERT INTO collab_editors (guild_id, posted_id, kind, target_id) VALUES (?, ?, ?, ?)", [(GUILD, posted, "user", USER), (GUILD, posted, "user", USER + 1), (GUILD, posted, "role", MOD_ROLE)])
+    # Two messages moved and copied out of the wrong channel. The token is never shown, and this one opens nothing.
+    for index, (mover, author, copied) in enumerate(((USER + 1, USER + 1, 0), (USER, 900000000000000301, 1))):
+        await db.run(
+            "INSERT INTO moved_messages (guild_id, message_id, channel_id, user_id, author_id, source_channel_id, source_message_id, copied, webhook_id, webhook_token, imported, moved_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'demo', ?, ?)",
+            (GUILD, 900000000000003001 + index, channels["help-desk"], mover, author, channels["general"], 900000000000003101 + index, copied, 900000000000003201, index, now - 3600 * (index + 1)),
+        )
     # The settings those rows belong to, so each page opens on its form and not on a "set this up" card.
     admin = Actor(USER, "Demo Admin")
     for module, form in (
@@ -433,6 +454,8 @@ async def _seed_samples(bot: Bot) -> None:
         ("voicelink", {"links": [{"channel_id": channels["Lounge"], "roles": [VET_ROLE]}]}),
         ("levels", {"rewards": [{"level": 5, "role_id": MEMBER_ROLE}, {"level": 20, "role_id": VET_ROLE}]}),
         ("proposals", {"channel_id": channels["announcements"], "moderator_role": MOD_ROLE}),
+        ("collaborative", {"enabled": True, "creator_roles": [MOD_ROLE], "log_channel": channels["mod-log"], "log_enabled": True}),
+        ("mover", {"enabled": True, "log_channel": channels["mod-log"]}),
         ("rolerules", {"log_channel": channels["mod-log"], "rules": [
             {"name": "Veterans are members", "enabled": True, "keep_in_sync": True, "add": [MEMBER_ROLE], "remove": [],
              "conditions": [{"type": "has_some", "roles": [VET_ROLE], "count": 0}, {"type": "lacks_all", "roles": [MUTED_ROLE], "count": 0}]},

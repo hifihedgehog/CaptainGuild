@@ -21,6 +21,8 @@ def load_all() -> list[type[Module]]:
     from .greetings import Greetings
     from .starboard import Starboard
     from .embeds import Embeds
+    from .collaborative import Collaborative
+    from .mover import Mover
     from .suggestions import Suggestions
     from .proposals import Proposals
     from .levels import Levels
@@ -31,10 +33,16 @@ def load_all() -> list[type[Module]]:
     from .utilities import Utilities
     from .fun import Fun
     from .games import Games
+    from .translation import Translation
     from .backup import Backup
     from .setup import Setup
     from .autoroles import Autoroles
     from .config import Config
     from .mydata import MyData
+    from .bookmarks import Bookmarks
+    from .rss import RSSFeeds
+    from .entrygiveaways import EntryGiveaways
+    from .channelarchive import ChannelArchive
+    from .answers import Answers
 
-    return [Config, MyData, Autoroles, Moderation, Automod, Logs, Reports, Voice, ReactionRoles, Roles, RoleRules, Mentions, Tags, Triggers, Feeds, Notifications, Greetings, Starboard, Embeds, Suggestions, Proposals, Levels, VoiceLink, Sticky, AutoPurge, Personalize, Utilities, Fun, Games, Backup, Setup]
+    return [Config, MyData, Autoroles, Moderation, Automod, Logs, Reports, Voice, ReactionRoles, Roles, RoleRules, Mentions, Tags, Triggers, Feeds, Notifications, Greetings, Starboard, Embeds, Collaborative, Mover, Suggestions, Proposals, Levels, VoiceLink, Sticky, AutoPurge, Personalize, Utilities, Fun, Games, Translation, Backup, Setup, Bookmarks, RSSFeeds, EntryGiveaways, ChannelArchive, Answers]

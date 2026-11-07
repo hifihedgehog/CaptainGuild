@@ -292,6 +292,60 @@ class Embeds(Module):
         stored = await self.db.scalar("SELECT payload FROM posted_versions WHERE guild_id = ? AND posted_id = ? AND number = ?", (guild_id, posted_id, version))
         return json.loads(stored) if stored else None
 
+    async def versions(self, guild_id: int, posted_id: int) -> list[dict]:
+        """A post's history, oldest first, with each payload read back."""
+        rows = await self.db.all(
+            "SELECT number, payload, note, saved_at, saved_by, saved_by_name FROM posted_versions WHERE guild_id = ? AND posted_id = ? ORDER BY number", (guild_id, posted_id),
+        )
+        for row in rows:
+            row["payload"] = json.loads(row["payload"])
+        return rows
+
+    async def move_post(self, guild_id: int, posted_id: int, channel_id: int, message_id: int) -> None:
+        """The post lives at another message now, as after a move, and its history carries on there."""
+        await self.db.run("UPDATE posted_messages SET channel_id = ?, message_id = ?, deleted_at = NULL WHERE guild_id = ? AND id = ?", (channel_id, message_id, guild_id, posted_id))
+
+    async def copy_post(self, guild_id: int, posted_id: int, channel_id: int, message_id: int, *, actor: Any, source: str) -> int:
+        """A new post for a copy at another message, holding the original's whole history. Returns the new post's number."""
+        original = await self.db.one("SELECT * FROM posted_messages WHERE guild_id = ? AND id = ?", (guild_id, posted_id))
+        if original is None:
+            raise OpsError("That post isn't in the library anymore.")
+        history = await self.db.all("SELECT number, payload, note, saved_at, saved_by, saved_by_name FROM posted_versions WHERE guild_id = ? AND posted_id = ? ORDER BY number", (guild_id, posted_id))
+        async with self.db.transaction():
+            copied = await self.db.insert(
+                "INSERT INTO posted_messages (guild_id, channel_id, message_id, summary, search, source, posted_by, posted_by_name, posted_at, edited_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (guild_id, channel_id, message_id, original["summary"], original["search"], source, actor.id if actor else None, actor.name if actor else None, time.time(), original["edited_at"]),
+            )
+            await self.db.many(
+                "INSERT INTO posted_versions (guild_id, posted_id, number, payload, note, saved_at, saved_by, saved_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [(guild_id, copied, row["number"], row["payload"], row["note"], row["saved_at"], row["saved_by"], row["saved_by_name"]) for row in history],
+            )
+        return copied
+
+    async def forget_post(self, guild_id: int, posted_id: int) -> None:
+        """Takes a post and its history out of the library. The message itself is left alone."""
+        async with self.db.transaction():
+            await self.db.run("DELETE FROM posted_versions WHERE guild_id = ? AND posted_id = ?", (guild_id, posted_id))
+            await self.db.run("DELETE FROM posted_messages WHERE guild_id = ? AND id = ?", (guild_id, posted_id))
+
+    async def add_earlier_versions(self, guild_id: int, posted_id: int, earlier: list[tuple[dict, float]], *, note: str) -> int:
+        """Puts earlier texts in front of a post's history, oldest first, each with the time it was written, as when a post comes over from
+        another bot with its history. The history keeps its newest MAX_VERSIONS, so the oldest of these go first. Returns how many went in."""
+        async with self.db.transaction():
+            held = await self.db.scalar("SELECT COUNT(*) FROM posted_versions WHERE guild_id = ? AND posted_id = ?", (guild_id, posted_id))
+            earlier = earlier[max(0, len(earlier) - max(0, MAX_VERSIONS - held)):]
+            count = len(earlier)
+            if not count:
+                return 0
+            # Two steps, since one would pass through numbers another row still holds, and each version number is unique to its post.
+            await self.db.run("UPDATE posted_versions SET number = -number WHERE guild_id = ? AND posted_id = ?", (guild_id, posted_id))
+            await self.db.run("UPDATE posted_versions SET number = ? - number WHERE guild_id = ? AND posted_id = ?", (count, guild_id, posted_id))
+            await self.db.many(
+                "INSERT INTO posted_versions (guild_id, posted_id, number, payload, note, saved_at, saved_by, saved_by_name) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)",
+                [(guild_id, posted_id, number, json.dumps(payload), note, saved_at) for number, (payload, saved_at) in enumerate(earlier, 1)],
+            )
+        return count
+
     async def _mark_deleted(self, guild_id: int, message_ids: list[int]) -> None:
         if not message_ids:
             return

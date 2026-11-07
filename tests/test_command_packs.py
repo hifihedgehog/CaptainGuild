@@ -138,3 +138,21 @@ class PackTest(GatewayTest):
         await self.settle()
         self.assert_no_errors()
         self.assertEqual(self.pack.ran, ["menu"])
+
+
+class CrowdedTreeTest(GatewayTest):
+    """The shared list is near Discord's 100 already. A pack the bot has named is held apart from it from the moment its feature loads, and its typed form stays with the bot."""
+    modules: list = []
+
+    async def test_a_packs_slash_form_never_enters_the_shared_list_and_its_typed_form_stays(self):
+        tree = self.bot.tree
+        for number in range(100 - len(tree.get_commands(type=discord.AppCommandType.chat_input))):
+            @app_commands.command(name=f"filler_{number}", description="x")
+            async def filler(interaction: discord.Interaction) -> None:
+                pass
+            tree.add_command(filler)
+        self.bot._pack_keys[Pack.__module__] = Pack.key  # as prepare names each pack before its feature loads
+        await self.bot.add_cog(Pack(self.bot))  # one more shared command would be past the limit
+        self.assertIsNone(tree.get_command("pack_hello"))
+        self.assertEqual([command.name for command in tree.held["packtest"]], ["pack_hello"])
+        self.assertIsNotNone(self.bot.get_command("pack_hello"), "the typed form stays")

@@ -8,3 +8,7 @@ cryptography==50.0.0
 pillow>=11,<14
 feedparser>=6.0.11,<7
 tzdata>=2025.2
+anthropic>=2.6,<3
+beautifulsoup4>=4.13,<5
+soupsieve>=2.6,<5
+cairosvg>=2.7.1,<3

@@ -25,6 +25,13 @@ log = logging.getLogger(__name__)
 MAX_ARCHIVED_THREADS = 256
 THREAD_TYPES = (discord.ChannelType.public_thread, discord.ChannelType.private_thread, discord.ChannelType.news_thread)
 TOO_MANY_CONTROLS = "This message has more buttons than Discord allows. Remove a link button."
+# Discord's default upload limit for bots and webhooks since September 3, 2026 (its change log). discord.py 2.7.1's table still gives 10 MiB below boost level 2.
+DEFAULT_UPLOAD_BYTES = 20 * 1024 * 1024
+
+
+def upload_limit(guild: Any) -> int:
+    """The largest file the bot can upload in a server: its boost level's limit, and never less than Discord's default."""
+    return max(getattr(guild, "filesize_limit", 0) or 0, DEFAULT_UPLOAD_BYTES)
 
 
 class OpsError(Exception):
@@ -141,6 +148,7 @@ class Ops(Protocol):
     async def create_mute_role(self, guild_id: int, name: str = "Muted") -> dict: ...
     async def edit_message(self, channel_id: int, message_id: int, payload: dict, *, components: list[dict] | None = None, current: dict | None = None) -> None: ...
     async def find_thread(self, guild_id: int, channel_id: int) -> bool: ...
+    async def place_state(self, guild_id: int, channel_id: int) -> str: ...
     def known_thread(self, guild_id: int, channel_id: int) -> Any: ...
     async def delete_message(self, channel_id: int, message_id: int) -> None: ...
     async def fetch_message(self, channel_id: int, message_id: int) -> dict: ...
@@ -330,10 +338,33 @@ class DiscordOps:
             return False
         if found.type not in THREAD_TYPES or found.guild.id != guild_id:
             return False
+        self._keep_thread(channel_id, found)
+        return True
+
+    def _keep_thread(self, channel_id: int, found: Any) -> None:
         self._archived_threads[channel_id] = found
         while len(self._archived_threads) > MAX_ARCHIVED_THREADS:
             self._archived_threads.pop(next(iter(self._archived_threads)))
-        return True
+
+    async def place_state(self, guild_id: int, channel_id: int) -> str:
+        """"here" for a channel or thread of this server, "gone" when Discord says it doesn't exist or it's another server's, and "unknown" when Discord
+        couldn't say, as with a refusal or an outage. find_thread reads both of the last two as no. Something that forgets rows for good forgets only on "gone"."""
+        guild = self.bot.get_guild(guild_id)
+        if guild is None:
+            return "unknown"
+        if guild.get_channel_or_thread(channel_id) is not None:
+            return "here"
+        try:
+            found = await guild.fetch_channel(channel_id)
+        except discord.NotFound:
+            return "gone"
+        except (discord.HTTPException, discord.InvalidData):
+            return "unknown"
+        if found.guild.id != guild_id:
+            return "gone"
+        if found.type in THREAD_TYPES:
+            self._keep_thread(channel_id, found)
+        return "here"
 
     @contextlib.asynccontextmanager
     async def _thread_open(self, channel: Any) -> AsyncIterator[None]:
@@ -404,7 +435,7 @@ class DiscordOps:
         """Post a copy of a message as this bot, pinging nobody. Its files are uploaded again, because links to them stop working once the original is deleted."""
         source = self._messageable(source_channel_id)
         channel = self._messageable(channel_id)
-        limit = getattr(getattr(channel, "guild", None), "filesize_limit", 10 * 1024 * 1024)
+        limit = upload_limit(getattr(channel, "guild", None))
         files: list[discord.File] = []
         uploads: dict[int, str] = {}
         skipped: list[str] = []
@@ -415,7 +446,7 @@ class DiscordOps:
                     skipped.append(attachment.filename)
                     continue
                 try:
-                    files.append(await attachment.to_file())
+                    files.append(await attachment.to_file(spoiler=attachment.is_spoiler()))  # discord.py takes the spoiler off unless told
                 except discord.HTTPException:
                     skipped.append(attachment.filename)
                     continue

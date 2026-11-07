@@ -412,8 +412,8 @@ class SlowCommandsTest(Case):
 
     async def test_a_list_too_large_to_upload_gets_a_sentence(self):
         ctx = self.ctx(self.admin)
-        self.guild.filesize_limit = 100
-        await self.utils._send_lines(ctx, "heading", ["x" * 60] * 100)
+        with mock.patch("captainguild.modules.utilities.upload_limit", lambda guild: 100):
+            await self.utils._send_lines(ctx, "heading", ["x" * 60] * 100)
         self.assertEqual(ctx.sent, [])
         self.assertIn("too large", ctx.fails[0])
 

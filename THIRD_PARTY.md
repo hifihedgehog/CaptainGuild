@@ -31,6 +31,10 @@ Pinned in `requirements.lock`, and not part of this repository.
 | [feedparser-sgmllib](https://github.com/python-syndication/feedparser-sgmllib) | PSF 2.0 |
 | [python-dotenv](https://github.com/theskumar/python-dotenv) | BSD 3-Clause |
 | [yarl](https://github.com/aio-libs/yarl) | Apache 2.0 |
+| [anthropic](https://github.com/anthropics/anthropic-sdk-python) | Apache 2.0. Code merged before its version 2.0 is also under MIT |
+| [Beautiful Soup](https://www.crummy.com/software/BeautifulSoup/) (beautifulsoup4) | MIT |
+| [soupsieve](https://github.com/facelessuser/soupsieve) | MIT |
+| [CairoSVG](https://github.com/Kozea/CairoSVG) | LGPL 3.0 or later. It brings cairocffi, cssselect2 and tinycss2 (BSD 3-Clause) and defusedxml (PSF 2.0), and draws through the cairo library on the machine |
 
 ## Language design
 
@@ -50,6 +54,11 @@ The bot calls these only when someone uses the matching feature. Each one sees t
 | [The Cat API](https://thecatapi.com/) (`thecatapi.com`), [Cataas](https://cataas.com/) (`cataas.com`), [Dog CEO](https://dog.ceo/) (`dog.ceo`), [RandomDog](https://random.dog/) (`random.dog`), [RandomFox](https://randomfox.ca/) (`randomfox.ca`), [Random-d.uk](https://random-d.uk/) (`random-d.uk`) | `/cute`, which needs no setup | Nothing from the server |
 | [Urban Dictionary](https://www.urbandictionary.com/) (`urbandictionary.com`) | `/fun urbandictionary`, which needs no setup | The word the member typed |
 | [Fortnite-API](https://fortnite-api.com/) (`fortnite-api.com`) | `/games fortnite`, once the bot's host adds a `FORTNITE_API_KEY` | That key, and the player name and platform the member typed |
+| [Anthropic API](https://www.anthropic.com/) (`api.anthropic.com`) | Wiki answers: `/how_do_i`, `/brainstorm`, `/ask`, `/make_model` and answers to new forum posts, once the bot's host adds an `ANTHROPIC_API_KEY` | That key, the member's request or the post's title and first message, and the passages of the server's wiki copies the model reads. For `/ask` the service also searches the web |
+| The wikis and documentation sites a server names on its Wiki answers page | The bot's copies of them, which Wiki answers searches | Requests for their pages, their sitemaps and their `robots.txt`, as often as each source's update schedule says |
 | [Roblox web APIs](https://create.roblox.com/docs/cloud/legacy/users/v1) (`users.roblox.com`, `friends.roblox.com`, `thumbnails.roblox.com`) | `/games roblox`, which needs no setup. The profile link in its answer goes to `www.roblox.com` | The user name the member typed |
 | [pastebin.com](https://pastebin.com/) and [starb.in](https://starb.in/) | A paste link someone gives a tag or embed command | The paste's address |
+| [DeepL](https://www.deepl.com/) (`oneshot-free.www.deepl.com`, and `oneshot-pro.www.deepl.com` for a server that enters a DeepL Pro token) | Translations, in servers that switch on translation and conversions | The text to translate, the languages, and that server's DeepL Pro token when it has one |
+| The free exchange rates published as `@fawazahmed0/currency-api` (`cdn.jsdelivr.net`, then `latest.currency-api.pages.dev`) | Currency conversions, in servers that switch on translation and conversions | Nothing from the server |
 | Any address someone gives the bot | `/fun addemoji` from a link, and a rank card background from a link | That address |
+| Any RSS or Atom feed a server adds | RSS feeds, read once a minute while the server has them on | A request for the feed's address, with the ETag and Last-Modified it sent last time |

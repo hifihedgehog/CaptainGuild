@@ -301,6 +301,14 @@ class FilingTest(ReportTest):
         self.assertEqual(order[:2], ["read", "delete"])
         self.assertEqual(self.reports_posted()[-1]["embeds"][0]["image"]["url"], "attachment://evidence-1.png")
 
+    async def test_a_text_report_keeps_an_image_up_to_discords_default_limit(self):
+        """Discord raised the default upload limit to 20 MiB on September 3, 2026, and discord.py 2.7.1 still says 10 below boost level 2."""
+        self.assertEqual(self.guild.filesize_limit, 10 * 1024 * 1024)
+        image = dict(self.attachment("proof.png"), size=15 * 1024 * 1024)
+        self.dispatch_message(user_id=self.mod_id, content=f"!report <@{self.member_id}> look at this", attachments=[image])
+        await self.settle()
+        self.assertEqual(self.reports_posted()[-1]["embeds"][0]["image"]["url"], "attachment://evidence-1.png")
+
     async def test_the_longest_possible_report_still_fits(self):
         big = [self.attachment("n" * 200 + f"{i}.png") for i in range(10)]
         await self.configure(forum_channel=int(self.forum["id"]))

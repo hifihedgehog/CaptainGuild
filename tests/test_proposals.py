@@ -561,7 +561,7 @@ class LifecycleTest(ProposalCase):
     async def test_a_deleted_channel_clears_the_setting_and_ends_its_votes(self):
         await self.propose()
         self.bot._connection.parse_channel_delete({**self.text})
-        await self.settle(0.2)
+        await self.settle()  # returns once the delete's handlers finish, however busy the machine is
         self.assert_no_errors()
         self.assertIsNone(self.bot.settings.get(self.guild_id, "proposals")["channel_id"])
         self.assertEqual((await self.row())["state"], WITHDRAWN)

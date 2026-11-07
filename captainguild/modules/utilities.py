@@ -21,6 +21,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from ..core.ops import upload_limit
 from ..core import access, delivery
 from ..core.context import unused_words
 from ..core.durations import Duration, humanize, ordinal, parse_duration
@@ -1539,7 +1540,7 @@ class Utilities(Module):
             await ctx.send(block, ephemeral=True, allowed_mentions=NO_PINGS)
             return
         data = body.encode("utf-8")
-        if len(data) > ctx.guild.filesize_limit:
+        if len(data) > upload_limit(ctx.guild):
             await ctx.fail(f"That list is too large to upload here, at {len(data) // (1024 * 1024) + 1} MB. Ask for fewer members, or a shorter format.")
             return
         await ctx.send(heading, file=discord.File(io.BytesIO(data), filename=filename), ephemeral=True, allowed_mentions=NO_PINGS)
