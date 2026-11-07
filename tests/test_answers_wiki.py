@@ -12,6 +12,7 @@ from unittest import mock
 
 from captainguild.core.answers import wiki
 from captainguild.core.answers.wiki import CRAWL, Copies, Library, Shelf, Source, WikiIndex, extract_page, page_links, parse_sitemap, split_sections, tokenize
+from captainguild.core import outside as outside_module
 from captainguild.core.outside import OutsideError, Reply
 from captainguild.db import Database
 from tests.answer_fakes import page_html, sitemap
@@ -355,6 +356,36 @@ class SitemapCopyTest(CopyCase):
         self.web.answer(SOURCE.address, f'<sitemapindex><sitemap><loc>{BASE}/sitemap-1.xml</loc></sitemap></sitemapindex>')
         self.web.answer(BASE + "/sitemap-1.xml", sitemap(BASE, self.pages))
         summary = await self.copies.refresh(SOURCE, self.web)
+        self.assertEqual(summary["pages"], 2)
+
+    async def test_a_sitemap_past_the_cap_on_a_page_is_read_whole(self):
+        # A wiki that lists every language in one sitemap runs past the cap on a page. One product wiki's was 9,345,697 bytes unpacked.
+        others = "".join(f"<url><loc>{BASE}/de/page-{n}</loc></url>" for n in range(170_000))
+        body = sitemap(BASE, self.pages).replace("</urlset>", others + "</urlset>").encode()
+        self.assertGreater(len(body), outside_module.DEFAULT_MAX_BYTES)
+
+        def capped(call):
+            if len(body) > call.get("max_bytes", outside_module.DEFAULT_MAX_BYTES):
+                raise OutsideError("The answer was too large.")  # as Outside._read refuses it
+            return Reply(200, body, {"content-type": "text/xml"})
+        self.web.answer(SOURCE.address, capped)
+        summary = await self.copies.refresh(SOURCE, self.web)
+        self.assertTrue(summary["ok"], summary)
+        self.assertEqual(summary["pages"], 2)
+        self.assertEqual(self.web.called(BASE + "/en/nozzle")[0].get("max_bytes"), None, "a page keeps the usual cap")
+
+    async def test_a_child_sitemap_past_the_cap_on_a_page_is_read_whole(self):
+        others = "".join(f"<url><loc>{BASE}/de/page-{n}</loc></url>" for n in range(170_000))
+        body = sitemap(BASE, self.pages).replace("</urlset>", others + "</urlset>").encode()
+
+        def capped(call):
+            if len(body) > call.get("max_bytes", outside_module.DEFAULT_MAX_BYTES):
+                raise OutsideError("The answer was too large.")
+            return Reply(200, body, {"content-type": "text/xml"})
+        self.web.answer(SOURCE.address, f'<sitemapindex><sitemap><loc>{BASE}/sitemap-1.xml</loc></sitemap></sitemapindex>')
+        self.web.answer(BASE + "/sitemap-1.xml", capped)
+        summary = await self.copies.refresh(SOURCE, self.web)
+        self.assertTrue(summary["ok"], summary)
         self.assertEqual(summary["pages"], 2)
 
     async def test_a_page_that_fails_is_counted_and_the_rest_are_kept(self):

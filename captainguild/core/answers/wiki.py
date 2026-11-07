@@ -45,6 +45,7 @@ RETRY_WAIT = 2.0  # seconds before the second try, doubled before the third
 FETCH_SECONDS = 60.0
 COMMIT_EVERY = 50
 SITEMAPS_PER_INDEX = 50  # the child sitemaps one sitemap index can send the bot to
+SITEMAP_MAX_BYTES = 52_428_800  # the sitemap protocol's limit for one file, uncompressed (sitemaps.org). A wiki that lists every language passes the cap on a page.
 ROBOTS_AGENT = "CaptainGuild"
 # Bounds on what one source can make this machine keep. A product wiki runs to a few thousand pages.
 MAX_PAGES = 5000
@@ -678,12 +679,13 @@ class Fetched:
         return f"{what} couldn't be reached." + (f" {self.problem}" if self.problem else "")
 
 
-async def fetch(outside: Any, url: str) -> Fetched:
-    """A GET, tried again on 429, a server error or no answer."""
+async def fetch(outside: Any, url: str, *, max_bytes: int | None = None) -> Fetched:
+    """A GET, tried again on 429, a server error or no answer. max_bytes raises the cap on the answer's size, which is the usual one without it."""
     got = Fetched(None)
+    larger = {"max_bytes": max_bytes} if max_bytes else {}
     for attempt in range(FETCH_RETRIES):
         try:
-            reply = await outside.get(url, timeout=FETCH_SECONDS, stranger=True)
+            reply = await outside.get(url, timeout=FETCH_SECONDS, stranger=True, **larger)
             got = Fetched(reply.status)
             if reply.status == 200:
                 kind = (reply.header("content-type") or "").lower()
@@ -807,12 +809,12 @@ class Copies:
 
     async def _sitemap_pages(self, source: Source, outside: Any) -> tuple[dict[str, str | None] | None, str]:
         """The pages the source's sitemap lists, following one level of sitemap index, or (None, why not)."""
-        got = await fetch(outside, source.address)
+        got = await fetch(outside, source.address, max_bytes=SITEMAP_MAX_BYTES)
         if got.body is None:
             return None, got.failure("The sitemap")
         pages, children = await asyncio.to_thread(parse_sitemap, got.body, source)
         for child in children[:SITEMAPS_PER_INDEX]:
-            inner = await fetch(outside, child)
+            inner = await fetch(outside, child, max_bytes=SITEMAP_MAX_BYTES)
             if inner.body is None:
                 return None, inner.failure(f"The sitemap {child}")
             pages.update((await asyncio.to_thread(parse_sitemap, inner.body, source))[0])
