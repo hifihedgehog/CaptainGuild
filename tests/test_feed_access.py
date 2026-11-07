@@ -1,4 +1,5 @@
 """Feeds and alerts post in the bot's name later on, so they ask what the person setting them up could do themselves, on commands and the dashboard alike."""
+import datetime
 import json
 import time
 
@@ -6,7 +7,7 @@ import discord
 
 from captainguild.core import delivery
 from captainguild.core.ops import DiscordOps
-from captainguild.modules.feeds import Feeds, next_run
+from captainguild.modules.feeds import Feeds, add_months, next_run
 from captainguild.modules.notifications import TWITCH_API, YOUTUBE_FEED, YOUTUBE_SITE, Notifications
 from captainguild.web.api import User
 from captainguild.web.app import SITE
@@ -216,7 +217,10 @@ class AutofeedRunTest(Case):
         self.assertIsNone(next_run(self.now, (10 ** 9, 0, 0, 0), self.now))
         self.assertIsNone(next_run(self.now, (0, 10 ** 10, 0, 0), self.now))
         self.assertIsNone(next_run(self.now, (0, 0, 0, 1), self.now))
-        self.assertIsNone(next_run(253_000_000_000.0, (120, 0, 0, 0), 253_000_000_000.0), "the year runs past 9999")
+        # August 9999. Ten more years run past the last year a date can hold, on every platform, not only where the clock stops at 3000.
+        self.assertIsNone(next_run(253_390_000_000.0, (120, 0, 0, 0), 253_390_000_000.0), "the year runs past 9999")
+        with self.assertRaises(ValueError):
+            add_months(datetime.datetime(9999, 8, 11, tzinfo=datetime.timezone.utc), 120)
         self.assertIsNotNone(next_run(self.now, (0, 0, 1, 0), self.now))
 
     async def test_a_ping_that_couldnt_go_out_shows_on_the_row(self):
