@@ -4,6 +4,7 @@ The role comes off only when no mute of either kind still holds it, and one acti
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 from unittest import mock
@@ -102,6 +103,15 @@ class RoleCase(GatewayTest):
         rows = await self.db.all("SELECT action FROM cases WHERE guild_id = ? AND user_id = ? ORDER BY number", (self.guild_id, self.target_id))
         return [row["action"] for row in rows]
 
+    async def cases_become(self, expected: list[str], seconds: float = 5.0) -> None:
+        """A role changed by hand reaches the bot through its own tasks and an audit log read, which a busy machine slows. This waits for the
+        case to appear, up to a limit, instead of a fixed moment. The assertions that follow still decide the test."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + seconds
+        while await self.cases() != expected and loop.time() < deadline:
+            await asyncio.sleep(0.02)
+        await self.settle(0.1)
+
     async def mini_row(self) -> dict | None:
         return await self.db.one("SELECT * FROM mini_mutes WHERE guild_id = ? AND user_id = ?", (self.guild_id, self.target_id))
 
@@ -199,7 +209,7 @@ class SharedRoleTest(RoleCase):
     async def test_taking_the_role_off_by_hand_ends_a_mini_mute(self):
         await self.mini_mute()
         self.set_roles(self.target_id, remove=self.muted)  # someone uses Discord's own menu
-        await self.settle(0.1)
+        await self.cases_become(["minimute", "unmute"])
         self.assertIsNone(await self.mini_row())
         self.assertIsNone(await self.mini_timer())
         self.assertEqual(await self.cases(), ["minimute", "unmute"])
@@ -268,7 +278,7 @@ class SharedRoleTest(RoleCase):
 
     async def test_an_outside_mute_is_still_recorded(self):
         self.set_roles(self.target_id, add=self.muted)  # someone uses Discord's own menu
-        await self.settle(0.1)
+        await self.cases_become(["mute"])
         self.assertIsNotNone(await self.mute_row())
         self.assertEqual(await self.cases(), ["mute"])
 
@@ -321,7 +331,7 @@ class SeparateRoleTest(RoleCase):
     async def test_taking_the_mini_role_off_by_hand_ends_the_mini_mute(self):
         await self.mini_mute()
         self.set_roles(self.target_id, remove=self.mini_role)
-        await self.settle(0.1)
+        await self.cases_become(["minimute", "unminimute"])
         self.assertIsNone(await self.mini_row())
         self.assertIsNone(await self.mini_timer())
         self.assertEqual(await self.cases(), ["minimute", "unminimute"])

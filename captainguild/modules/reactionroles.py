@@ -55,6 +55,7 @@ MAX_COMPONENTS = 25
 MAX_ROWS = 5
 BUTTONS_PER_ROW = 5
 MAX_MENU_OPTIONS = 25
+MOST_OPTIONS = MAX_ROWS * MAX_MENU_OPTIONS  # five menus of 25
 MAX_LIMIT = 250
 MIN_TEMP = 60
 MAX_TEMP = 365 * 86400
@@ -74,6 +75,10 @@ RETRY_LIMIT = 8
 TRASH_SECONDS = 7 * 86400
 # Reactions gone for more than this many people at startup means someone cleared the message, not that this many members changed their minds.
 MASS_CLEAR = 25
+# How long after the bot clears a message's reactions to put them in order it takes Discord's report of that clear as its own.
+ORDER_GRACE = 60.0
+OLD_ORDER = "The reactions stay in their old order."
+REORDER_NEEDS = "Putting the reactions in order takes everyone's reactions off the message, and that takes Manage Messages in its channel."
 # How long the same warning to staff stays quiet, so a busy gate can't flood the log channel.
 STAFF_NOTICE_GAP = 3600.0
 SETUP_TIMEOUT = 120.0
@@ -259,6 +264,7 @@ class RR:
     created_at: float = 0.0
     options: list[Option] = field(default_factory=list)
     template: dict | None = None  # the message as written, when it holds {roles}
+    cleared_at: float | None = None  # when the bot last saw every reaction on it cleared
 
     def by_key(self, key: str | None) -> Option | None:
         return next((o for o in self.options if o.key == key), None)
@@ -316,6 +322,7 @@ class Work:
     done: list[asyncio.Future] = field(default_factory=list)
     tries: int = 0
     added_first: bool = False  # a reaction went on before this event, and the two merged
+    at: float = field(default_factory=time.time)  # when the event happened. A retry keeps it, so a clear after it is known to be later.
 
 
 class _Queue:
@@ -390,7 +397,7 @@ def _build(row: dict, pairs: list[dict]) -> RR:
         message_id=row["message_id"], guild_id=row["guild_id"], channel_id=row["channel_id"], kind=row["kind"], mode=row["mode"],
         limit=row["limit_count"], temp_seconds=row["temp_seconds"], whitelist=json.loads(row["whitelist"]), blacklist=json.loads(row["blacklist"]),
         group_id=row["group_id"], destruct_at=row["destruct_at"], foreign=bool(row["foreign_author"]), placeholder=row["placeholder"], created_at=row["created_at"],
-        template=json.loads(row["template"]) if row["template"] else None,
+        template=json.loads(row["template"]) if row["template"] else None, cleared_at=row["cleared_at"],
     )
     options: dict[int, Option] = {}
     for pair in pairs:
@@ -631,6 +638,7 @@ class ReactionRoles(Module):
         CREATE TABLE rr_synced (message_id INTEGER PRIMARY KEY, synced_at REAL NOT NULL DEFAULT 0);
         """,
         "ALTER TABLE rr_messages ADD COLUMN template TEXT;",
+        "ALTER TABLE rr_messages ADD COLUMN cleared_at REAL;",
     ]
 
     def __init__(self, bot: Any) -> None:
@@ -653,6 +661,10 @@ class ReactionRoles(Module):
         # Live events for a reaction whose list is being read, as user and whether it's on now. A read can take minutes, and it trusts these over the list for anyone who acted meanwhile.
         self._reading: dict[tuple[int, str], list[dict[int, bool]]] = {}
         self._ready_again = False
+        # Messages whose reactions the bot cleared to put them in order, and until when Discord's report of that clear counts as the bot's own.
+        self._reordering: dict[int, float] = {}
+        # How many times each message's reactions were cleared while the bot ran. A read of who reacted that spans a clear can't be trusted.
+        self._clears: dict[int, int] = {}
 
     async def on_load(self) -> None:
         self.bot.timers.handler("rr_temp", self._temp_due)
@@ -903,10 +915,11 @@ class ReactionRoles(Module):
             return []
         return self.render(rr)
 
-    async def _save(self, rr: RR, previous: RR | None = None, *, payload: dict | None = None, fresh: bool = False) -> list[str]:
+    async def _save(self, rr: RR, previous: RR | None = None, *, payload: dict | None = None, fresh: bool = False, reorder: bool = False) -> list[str]:
         """Store a message's reaction roles and make the message match. Returns anything the person should know that didn't stop the save.
 
         The edit comes first, so a refused edit leaves the stored setup as it was. Reactions come after, one emoji failing doesn't undo the rest.
+        With `reorder`, a reaction message's reactions are cleared and the bot's go back in the order of its rows.
         """
         ops = self.bot.ops
         controls = self.render(rr)
@@ -927,26 +940,33 @@ class ReactionRoles(Module):
         warnings: list[str] = []
         had = {o.key: o for o in previous.options} if previous is not None and previous.mode == "reactions" else {}
         if rr.mode == "reactions":
-            now = {o.key: o for o in rr.options}
-            for key, option in had.items():
-                if key not in now:
-                    await self._clear_emoji(rr, option)
-                    await self.db.run("DELETE FROM rr_seen WHERE message_id = ? AND emoji_key = ?", (rr.message_id, key))
-            if previous is not None and previous.kind not in CLEARING and rr.kind in CLEARING:
-                # Reactions left from the old type would all look unhandled at the next start.
-                for key, option in now.items():
-                    if key in had:
+            if reorder:
+                try:
+                    warnings.extend(await self._put_in_order(rr))
+                except OpsError as error:
+                    warnings.append(f"{OLD_ORDER} {error}")
+                    reorder = False
+            if not reorder:
+                now = {o.key: o for o in rr.options}
+                for key, option in had.items():
+                    if key not in now:
                         await self._clear_emoji(rr, option)
-                await self.db.run("DELETE FROM rr_seen WHERE message_id = ?", (rr.message_id,))
-                had = {}
-            added = [o for o in rr.options if o.key not in had]
-            for option in added:
-                problem = await self._react(rr, option)
-                if problem:
-                    warnings.append(problem)
-            if added and not fresh:
-                await self.db.run("DELETE FROM rr_synced WHERE message_id = ?", (rr.message_id,))
-                self._sync_soon(rr.message_id)
+                        await self.db.run("DELETE FROM rr_seen WHERE message_id = ? AND emoji_key = ?", (rr.message_id, key))
+                if previous is not None and previous.kind not in CLEARING and rr.kind in CLEARING:
+                    # Reactions left from the old type would all look unhandled at the next start.
+                    for key, option in now.items():
+                        if key in had:
+                            await self._clear_emoji(rr, option)
+                    await self.db.run("DELETE FROM rr_seen WHERE message_id = ?", (rr.message_id,))
+                    had = {}
+                added = [o for o in rr.options if o.key not in had]
+                for option in added:
+                    problem = await self._react(rr, option)
+                    if problem:
+                        warnings.append(problem)
+                if added and not fresh:
+                    await self.db.run("DELETE FROM rr_synced WHERE message_id = ?", (rr.message_id,))
+                    self._sync_soon(rr.message_id)
         elif previous is not None and previous.mode == "reactions":
             try:
                 await ops.clear_reactions(rr.channel_id, rr.message_id)
@@ -978,6 +998,49 @@ class ReactionRoles(Module):
             )
             if not still:
                 await self.db.run("DELETE FROM timers WHERE kind = 'rr_temp' AND guild_id = ? AND key LIKE ?", (rr.guild_id, f"{rr.guild_id}:%:{role_id}"))
+
+    async def _mark_cleared(self, message_id: int) -> None:
+        """Every reaction on the message is gone. A reaction event from before now must not go on record afterward, and a read of who reacted that spans this can't be trusted."""
+        self._clears[message_id] = self._clears.get(message_id, 0) + 1
+        await self.db.run("UPDATE rr_messages SET cleared_at = ? WHERE message_id = ?", (time.time(), message_id))
+
+    async def _put_in_order(self, rr: RR) -> list[str]:
+        """Discord lists a message's reactions in the order each emoji first went on, so the only way to change the order is to take every reaction off
+        and add the bot's back in the order of the rows. Members keep their roles. Their reactions go, and so does the record of who reacted, so
+        dropping a role afterward takes reacting and then taking the reaction off. Raises OpsError, with nothing changed, if the clear is refused."""
+        now = time.monotonic()
+        self._reordering = {message_id: until for message_id, until in self._reordering.items() if until > now}
+        self._reordering[rr.message_id] = now + ORDER_GRACE
+        try:
+            await self.bot.ops.clear_reactions(rr.channel_id, rr.message_id)
+        except OpsError:
+            self._reordering.pop(rr.message_id, None)
+            raise
+        await self._mark_cleared(rr.message_id)
+        await self.db.run("DELETE FROM rr_seen WHERE message_id = ?", (rr.message_id,))
+        warnings: list[str] = []
+        for option in rr.options:
+            problem = await self._react(rr, option)
+            if problem:
+                warnings.append(problem)
+        return warnings
+
+    @staticmethod
+    def unusable_refusal(unusable: list[str]) -> str:
+        one = len(unusable) == 1
+        return (f"The bot can't react with {' '.join(unusable)}, because it isn't in the server {'that emoji comes' if one else 'those emoji come'} from. "
+                f"Clearing the reactions would leave {'it' if one else 'them'} off for good, so swap {'it' if one else 'them'} for {'an emoji' if one else 'emoji'} the bot can use first.")
+
+    def unusable_emoji(self, rr: RR) -> list[str]:
+        """The emoji on a message the bot can't react with: a custom emoji from a server it isn't in, or one Discord has switched off.
+        Clearing reactions takes those off for good, since nothing can put them back in their place."""
+        found = []
+        for option in rr.options:
+            if option.key.isdigit():
+                emoji = self.bot.get_emoji(int(option.key))
+                if emoji is None or not emoji.available:
+                    found.append(option.emoji)
+        return found
 
     async def _react(self, rr: RR, option: Option) -> str | None:
         try:
@@ -1209,12 +1272,13 @@ class ReactionRoles(Module):
             return
         await self.bot.timers.schedule(
             "rr_retry", time.time() + min(3600, 60 * 2 ** (tries - 1)),
-            {"guild_id": guild_id, "user_id": user_id, "message_id": work.message_id, "key": work.key, "action": work.action, "tries": tries},
+            {"guild_id": guild_id, "user_id": user_id, "message_id": work.message_id, "key": work.key, "action": work.action, "tries": tries, "at": work.at},
             guild_id=guild_id, key=f"{work.message_id}:{user_id}:{work.key}:{work.action}",
         )
 
     async def _retry_due(self, payload: dict, row: dict) -> None:
-        self._enqueue(payload["guild_id"], payload["user_id"], Work(payload["action"], payload["message_id"], key=payload["key"], tries=payload["tries"]))
+        # A retry stored before events carried their time counts as older than any clear, so it gives the role and leaves no record.
+        self._enqueue(payload["guild_id"], payload["user_id"], Work(payload["action"], payload["message_id"], key=payload["key"], tries=payload["tries"], at=payload.get("at", 0.0)))
 
     def _held(self, queue: _Queue, member: Any) -> set[int]:
         """What the member holds: the gateway's copy, corrected for changes it hasn't shown yet. A change it does show is forgotten, so a moderator's later change counts."""
@@ -1267,9 +1331,13 @@ class ReactionRoles(Module):
 
     @commands.Cog.listener()
     async def on_raw_reaction_clear(self, payload: discord.RawReactionClearEvent) -> None:
+        until = self._reordering.pop(payload.message_id, None)
+        if until is not None and until > time.monotonic():
+            return  # the bot cleared them itself to put them in order, and it puts its own back
         rr = await self.get(payload.message_id)
         if rr is None:
             return
+        await self._mark_cleared(rr.message_id)
         await self.db.run("DELETE FROM rr_seen WHERE message_id = ?", (rr.message_id,))
         if rr.mode == "reactions":
             for option in rr.options:
@@ -1285,6 +1353,7 @@ class ReactionRoles(Module):
         option = rr.by_key(key_of(payload.emoji))
         if option is None:
             return
+        await self._mark_cleared(rr.message_id)  # one emoji, but a missed record only means a later catch-up looks again
         await self.db.run("DELETE FROM rr_seen WHERE message_id = ? AND emoji_key = ?", (rr.message_id, option.key))
         if rr.mode == "reactions":
             problem = await self._react(rr, option)
@@ -1420,7 +1489,7 @@ class ReactionRoles(Module):
                 await self._set_seen(rr.message_id, option.key, user_id, work.action == "added")
             return None
         if work.action == "added":
-            return await self._reaction_added(queue, guild, member, rr, option)
+            return await self._reaction_added(queue, guild, member, rr, option, record=rr.cleared_at is None or work.at > rr.cleared_at)
         return await self._reaction_removed(queue, guild, member, rr, option)
 
     async def _member_gone(self, rr: RR, option: Option | None, user_id: int, work: Work) -> None:
@@ -1437,7 +1506,7 @@ class ReactionRoles(Module):
         else:
             await self.db.run("DELETE FROM rr_seen WHERE message_id = ? AND emoji_key = ? AND user_id = ?", (message_id, key, user_id))
 
-    async def _reaction_added(self, queue: _Queue, guild: Any, member: Any, rr: RR, option: Option) -> Outcome:
+    async def _reaction_added(self, queue: _Queue, guild: Any, member: Any, rr: RR, option: Option, *, record: bool = True) -> Outcome:
         if rr.kind == "lock":
             outcome = Outcome(refused="This message is locked.")
         elif rr.kind in ("drop", "reversed"):
@@ -1448,7 +1517,7 @@ class ReactionRoles(Module):
             return outcome  # still unhandled, so the next catch-up gets to it
         if outcome.refused or rr.kind in CLEARING:
             await self._take_reaction(rr, option, member.id)
-        else:
+        elif record:
             await self._set_seen(rr.message_id, option.key, member.id, True)
         return outcome
 
@@ -1891,9 +1960,12 @@ class ReactionRoles(Module):
 
     async def _handle_leftovers(self, rr: RR, option: Option, me_id: int | None) -> None:
         """A reaction still here hasn't been handled, unless it's on record: one from before this message took reactions off, or one the bot couldn't remove."""
+        clears = self._clears.get(rr.message_id, 0)
         rows = await self.db.all("SELECT user_id FROM rr_seen WHERE message_id = ? AND emoji_key = ?", (rr.message_id, option.key))
         known = {row["user_id"] for row in rows}
         people, acted = await self._read_reactors(rr, option, me_id)
+        if self._clears.get(rr.message_id, 0) != clears:
+            return  # the reactions were cleared while being read
         for user_id, is_bot in people.items():
             if not is_bot and user_id not in known and user_id not in acted:
                 self._enqueue(rr.guild_id, user_id, Work("added", rr.message_id, key=option.key))
@@ -1901,7 +1973,10 @@ class ReactionRoles(Module):
     async def _baseline(self, rr: RR, option: Option, me_id: int | None, others: int) -> int:
         """A message that already has reactions when it first gets reaction roles. They're on record from now on, and nobody's roles change, since a member may have lost that role on purpose since reacting. Returns how many are people rather than bots."""
         # A reaction that came or went during the read is the queue's to record, so these rows stay as they are.
+        clears = self._clears.get(rr.message_id, 0)
         people, acted = await self._read_reactors(rr, option, me_id) if others else ({}, {})
+        if self._clears.get(rr.message_id, 0) != clears:
+            return 0  # the reactions were cleared while being read, and the clear emptied the record already
         rows = [(rr.message_id, option.key, user_id) for user_id in people if user_id not in acted]
 
         def replace(connection: Any) -> None:
@@ -1914,9 +1989,13 @@ class ReactionRoles(Module):
 
     async def _catch_up(self, rr: RR, option: Option, me_id: int | None, others: int, *, cleared: bool = False, unsure: bool = False) -> None:
         """What changed on this emoji while the bot was away. `cleared` means the bot's own reaction had gone too, so reactions that are gone say nothing about what anyone wanted. `unsure` means the bot can't use this emoji, so it can't tell a clear from people leaving."""
+        clears = self._clears.get(rr.message_id, 0)
         rows = await self.db.all("SELECT user_id FROM rr_seen WHERE message_id = ? AND emoji_key = ?", (rr.message_id, option.key))
         known = {row["user_id"] for row in rows}
         people, acted = await self._read_reactors(rr, option, me_id)
+        if self._clears.get(rr.message_id, 0) != clears:
+            log.info("The reactions on %s were cleared during a catch-up, so it changed nobody's roles", rr.message_id)
+            return
         bots = [user_id for user_id, is_bot in people.items() if is_bot and user_id not in known]
         if bots:
             await self.db.many("INSERT OR IGNORE INTO rr_seen (message_id, emoji_key, user_id) VALUES (?, ?, ?)", [(rr.message_id, option.key, user_id) for user_id in bots])
@@ -2559,9 +2638,8 @@ class ReactionRoles(Module):
             return
         await self._set_kind(ctx, message, "temp", temp_seconds=seconds)
 
-    @reactionrole.command(name="normal", description="Put a message back to the normal type")
+    @reactionrole.command(name="normal", with_app_command=False, description="Put a message back to the normal type")
     @requires("manage_guild")
-    @app_commands.describe(message_id="The message's ID or link")
     async def rr_normal(self, ctx: commands.Context, message_id: str) -> None:
         await ctx.defer(ephemeral=True)
         await self._set_kind(ctx, message_id, "normal")
@@ -2744,6 +2822,58 @@ class ReactionRoles(Module):
         moved = await self.move_message(ctx.guild.id, rr.message_id, place[0], place[1])
         await self._record(ctx, "reactionrole.move", f"{rr.message_id} to {place[1]}")
         await ctx.ok(" ".join(["Moved them.", *(moved or {}).get("warnings", [])])[:1900])
+
+    @reactionrole.command(name="reorder", aliases=["order"], description="Move an emoji to another place in a message's order")
+    @requires("manage_guild")
+    @app_commands.describe(message_id="The message's ID or link", emoji="The emoji to move", place="Its new place, where 1 is first")
+    async def rr_reorder(self, ctx: commands.Context, message_id: str, emoji: str, place: commands.Range[int, 1, MOST_OPTIONS]) -> None:
+        """Discord shows reactions in the order each emoji first went on. Moving one clears every reaction and puts the bot's back in the new order. Members keep their roles."""
+        await ctx.defer(ephemeral=True)
+        rr = await self._tracked(ctx, message_id)
+        if rr is None:
+            return
+        try:
+            key = emoji_key(clean_emoji(emoji))
+        except Invalid as error:
+            await ctx.fail(str(error))
+            return
+        option = rr.by_key(key)
+        if option is None:
+            await ctx.fail(f"That emoji isn't on that message. `/reactionrole show {rr.message_id}` lists the ones that are.")
+            return
+        if place > len(rr.options):
+            await ctx.fail(f"That message has {len(rr.options)} emoji, so pick a place from 1 to {len(rr.options)}.")
+            return
+        previous = rr.copied()
+        rr.options.remove(option)
+        rr.options.insert(place - 1, option)
+        for slot, each in enumerate(rr.options):
+            each.slot = slot
+        reorder = False
+        if rr.mode == "reactions":
+            current = await self.bot.ops.fetch_message(rr.channel_id, rr.message_id)
+            wanted = [o.key for o in rr.options]
+            shown = [emoji_key(reaction["emoji"]) for reaction in current["reactions"]]
+            reorder = [k for k in shown if k in wanted] != wanted
+        if reorder:
+            channel = ctx.guild.get_channel_or_thread(rr.channel_id)
+            if channel is not None and not access.can_manage_messages(ctx.author, channel):
+                await ctx.fail(REORDER_NEEDS)
+                return
+            unusable = self.unusable_emoji(rr)
+            if unusable:
+                await ctx.fail(self.unusable_refusal(unusable))
+                return
+            if not await self._confirm(ctx, f"This takes every reaction off {rr.url()} and puts the bot's back in the new order. Members keep their roles. Anyone who wants to drop one afterward reacts and then takes the reaction off. Go ahead?"):
+                await ctx.fail("Left everything as it was.")
+                return
+            now = await self.get(rr.message_id)
+            if now is None or rr_json(now) != rr_json(previous):
+                await ctx.fail("That message's reaction roles changed while you were deciding, so nothing moved. Run the command again.")
+                return
+        notes = await self._save(rr, previous, reorder=reorder)
+        await self._record(ctx, "reactionrole.reorder", str(rr.message_id))
+        await ctx.ok(" ".join([f"{option.emoji} is number {place} on {rr.url()}.", *notes])[:1900])
 
     @reactionrole.command(name="aio", description="Post a message and set up its reaction roles in one command")
     @requires("manage_guild")
@@ -3004,6 +3134,24 @@ class ReactionRoles(Module):
         rows = [r for r in reversed(guild.roles) if not r.is_default() and not r.managed and needle in r.name.casefold()]
         return [app_commands.Choice(name=r.name[:100], value=str(r.id)) for r in rows[:25]]
 
+    @rr_reorder.autocomplete("emoji")
+    async def _emoji_choices(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+        """The emoji on the message picked in the same command, each with the roles it hands out."""
+        guild = interaction.guild
+        ref = parse_message_ref(str(getattr(interaction.namespace, "message_id", "") or ""))
+        rr = await self.get(ref[2]) if guild is not None and ref is not None else None
+        if rr is None or rr.guild_id != guild.id or not self._shows_to(interaction.user, guild, rr.channel_id):
+            return []
+        needle = current.casefold()
+        out = []
+        for option in rr.options:
+            custom = _CUSTOM_EMOJI.fullmatch(option.emoji)
+            roles = ", ".join(role.name for role in (guild.get_role(i) for i in option.role_ids) if role)
+            name = f"{f':{custom.group(2)}:' if custom else option.emoji} {roles}"[:100]
+            if needle in name.casefold() or needle in option.emoji:
+                out.append(app_commands.Choice(name=name, value=option.emoji))
+        return out[:25]
+
     @rr_show.autocomplete("message_id")
     @rr_remove.autocomplete("message_id")
     @rr_purge.autocomplete("message_id")
@@ -3013,7 +3161,7 @@ class ReactionRoles(Module):
     @rr_edit.autocomplete("message_id")
     @rr_fix.autocomplete("message_id")
     @rr_modify.autocomplete("message_id")
-    @rr_normal.autocomplete("message_id")
+    @rr_reorder.autocomplete("message_id")
     @rr_temp.autocomplete("message_id")
     @rr_limit.autocomplete("message_id")
     @rr_unlink.autocomplete("message_id")
@@ -3190,7 +3338,11 @@ class ReactionRoles(Module):
             return {"readonly": True, "error": str(error), "payload": None, "url": rr.url(), "author_name": None}
         if rr.foreign == bool(current["mine"]):
             await self.db.run("UPDATE rr_messages SET foreign_author = ? WHERE message_id = ?", (int(not current["mine"]), rr.message_id))
-        return {"readonly": not current["mine"], "error": None, "payload": rr.template or current["payload"], "url": current["url"], "author_name": current["author_name"]}
+        return {
+            "readonly": not current["mine"], "error": None, "payload": rr.template or current["payload"], "url": current["url"], "author_name": current["author_name"],
+            # The order Discord shows the reactions in, which is the order each emoji first went on.
+            "reactions": [emoji_key(reaction["emoji"]) for reaction in current["reactions"]],
+        }
 
     async def _api_create(self, req: Any) -> dict:
         form = await req.json()
@@ -3271,18 +3423,28 @@ class ReactionRoles(Module):
         field = opens_up(rr, settings["whitelist"], settings["blacklist"], settings["kind"])
         if field:
             self._check_opening(req, info, rr, field)
+        reorder = bool(form.get("reorder")) and settings["mode"] == "reactions"
+        if reorder and not req.can_manage_messages(rr.channel_id):
+            # Clearing reactions takes everyone's off, which Discord lets only those with Manage Messages do.
+            raise ValidationError({"reorder": REORDER_NEEDS})
         others = await self._read_links(req, rr, form)
         previous = rr.copied()
         previous.foreign = rr.foreign = foreign
         for name, value in settings.items():
             setattr(rr, name, value)
+        if reorder:
+            unusable = self.unusable_emoji(rr)
+            if unusable:
+                raise ValidationError({"reorder": self.unusable_refusal(unusable)})
         rr.destruct_at = self._destruct_from(req, rr.channel_id, form, rr.destruct_at)
         edited = self._take_template(rr, payload)
-        warnings = await self._save(rr, previous, payload=edited)
+        warnings = await self._save(rr, previous, payload=edited, reorder=reorder)
         if edited is not None:
             await self._add_to_library(rr, edited, req.actor, note="Edited")
         await self._apply_links(req, rr, others)
         await req.record("reactionrole.update", detail=str(rr.message_id))
+        if reorder and not any(warning.startswith(OLD_ORDER) for warning in warnings):
+            await req.record("reactionrole.reorder", detail=str(rr.message_id))
         return {**rr_json(await self.get(rr.message_id) or rr), "warnings": warnings}
 
     async def _api_delete(self, req: Any) -> dict:

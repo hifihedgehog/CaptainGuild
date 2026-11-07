@@ -73,6 +73,11 @@ class Network:
         self.reactors: dict[tuple[int, str], dict[int, dict]] = {}
         self.invites: dict[str, dict] = {}
         self.bans: dict[int, dict] = {}  # who a test says is banned, by ID, as user JSON
+        self.keep_webhooks = False  # a test that checks a webhook is found again turns this on
+        self.webhooks: dict[int, list[dict]] = {}
+        self.gone_webhooks: set[int] = set()  # webhooks a test says someone deleted
+        self.webhook_params: list[tuple[str, str, dict]] = []
+        self.guild_commands: dict[int, list[dict]] = {}  # what each server's command registration last sent
 
     def message_json(self, channel_id: int, body: dict | None, *, message_id: int | None = None, webhook_id: int | None = None) -> dict:
         body = body or {}
@@ -185,11 +190,17 @@ class Network:
                 self.messages.pop(int(gone), None)
             return None
         if key == "GET /channels/{channel_id}/webhooks":
-            return []
+            return list(self.webhooks.get(channel_id, [])) if self.keep_webhooks else []
         if key == "GET /guilds/{guild_id}/webhooks":
             return []
         if key == "POST /channels/{channel_id}/webhooks":
-            return {"id": str(new_id()), "type": 1, "channel_id": str(channel_id), "guild_id": str(self.guild_id), "name": body.get("name"), "token": "webhook-token", "user": self.bot_user, "application_id": self.bot_user["id"]}
+            made = {"id": str(new_id()), "type": 1, "channel_id": str(channel_id), "guild_id": str(self.guild_id), "name": body.get("name"), "token": "webhook-token", "user": self.bot_user, "application_id": self.bot_user["id"]}
+            self.webhooks.setdefault(channel_id, []).append(made)
+            return made
+        if key == "PUT /applications/{application_id}/guilds/{guild_id}/commands":
+            self.guild_commands[guild_id] = list(body or [])
+            return [{**command, "description": command.get("description", ""), "id": str(new_id()), "application_id": self.bot_user["id"], "guild_id": str(guild_id), "version": "1",
+                     "default_member_permissions": command.get("default_member_permissions")} for command in body or []]
         if key == "GET /guilds/{guild_id}/audit-logs":
             return {"audit_log_entries": [], "users": [], "webhooks": [], "threads": [], "integrations": [], "auto_moderation_rules": [], "application_commands": [], "guild_scheduled_events": []}
         if key in ("PUT /guilds/{guild_id}/members/{user_id}/roles/{role_id}", "DELETE /guilds/{guild_id}/members/{user_id}/roles/{role_id}", "DELETE /guilds/{guild_id}/members/{user_id}", "PUT /guilds/{guild_id}/bans/{user_id}", "DELETE /guilds/{guild_id}/bans/{user_id}", "PUT /channels/{channel_id}/permissions/{target}", "DELETE /channels/{channel_id}/permissions/{target}"):
@@ -275,6 +286,9 @@ class Network:
                     break
         body = body or {}
         self.calls.append((method, path, body))
+        self.webhook_params.append((method, path, dict(kwargs.get("params") or {})))
+        if getattr(route, "webhook_id", None) in self.gone_webhooks:
+            raise discord.NotFound(FakeHTTPResponse(404), {"code": 10015, "message": "Unknown Webhook"})
         if path == "/interactions/{webhook_id}/{webhook_token}/callback":
             kind = body.get("type")
             data = body.get("data") or {}

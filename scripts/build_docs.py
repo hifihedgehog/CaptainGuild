@@ -50,13 +50,19 @@ PAGE = """<!doctype html>
 
 GUIDE = """
 <h2 id="start">Getting started</h2>
-<p>Type <code>/dashboard</code> in Discord. The bot answers with a private link that signs you in, and you pick a server. You need Manage Server to change settings. Each page in the sidebar is one feature. Most features do nothing until you set them up. The bot keeps recent message text for the deleted and edited message logs, 30 days unless you change it.</p>
+<p>Click Dashboard at the top of this page. Discord asks you to confirm who you are, and then you pick a server. The bot's <code>/dashboard</code> command also answers with a private link that signs you in. You need Manage Server to change settings. Each page in the sidebar is one feature. Most features do nothing until you set them up. The bot keeps recent message text for the deleted and edited message logs, 30 days unless you change it.</p>
 <p>Move the bot's role above every role you want it to hand out. Discord doesn't let a bot give or take a role at or above its own.</p>
 
 <h2 id="proposals">Proposals</h2>
 <p>A proposal is a change to the server put to two votes on one post. A moderator submits it with <code>/submit_proposal</code> or from the Proposals page. The bot posts it, opens a discussion thread and adds the two vote reactions.</p>
 <p>Members have the voting time set on the page, 72 hours unless you change it. Their vote passes if more than half of the votes are in favor. Moderators vote with the same reactions, counted apart, with no deadline. Their vote is decided once more than half of all moderators agree. A proposal is approved only if both votes pass, and it's rejected as soon as either one fails.</p>
 <p>Once the member vote is over, moderators who haven't voted get a DM every 24 hours until their vote is decided. <code>/proposal promote</code> or Put to a vote on the Suggestions page starts a proposal from a suggestion, and the result becomes that suggestion's decision.</p>
+
+<h2 id="rolerules">Role rules</h2>
+<p>A role rule adds or removes roles for members who match all of its conditions, up to ten. A condition looks at a set of roles: whether a member has any of them, all of them, none of them, or is missing one, or how many of them they hold. Rules run from the top of the list on the Role rules page, and a change one rule makes can set off the rules below it.</p>
+<p>A rule that keeps in sync takes its added roles back from members who stop matching, unless another rule that matches them adds the same role. Without it, a role stays until something else takes it. <code>/rolerule create</code> makes a rule that keeps one target role on everyone who holds any of the tracked roles, with an optional ignored role that keeps people out and a required role they must also hold.</p>
+<p>The bot looks at a member when their roles change and when they pass the rules screen, at everyone when a rule is saved or switched on, and at everyone again every 10 minutes. Each member gets one role edit for all of their changes, and edits go out at about one a second. Preview on the page shows who would gain and lose each role before you save, and a save that changes more than 200 members asks you to confirm the count. Rules that keep undoing each other's changes are switched off, and so is a rule that checks for a role someone deleted. The server log channel says which ones.</p>
+<p><code>/mass_mention</code> pings every member who holds all of the roles you name, up to 1,000 of them, and asks first when it's more than 50. It needs Mention Everyone, and the roles named in its first line don't ping.</p>
 
 <h2 id="commands-work">How commands work</h2>
 <p>Most commands work three ways: as a slash command, after the server's prefix (<code>!warn @someone spamming</code>), and after mentioning the bot. A command listed below with <code>!</code> in front has no slash form.</p>

@@ -3,6 +3,7 @@ import json
 import time
 from types import SimpleNamespace
 from unittest import mock
+from urllib.parse import unquote
 
 import discord
 
@@ -1864,6 +1865,340 @@ class DashboardTest(Base):
         self.assertEqual((await client.post(self.path("/reactionroles/import"), json={"text": "5"})).status, 400)
 
 
+class ReorderTest(Base):
+    """Discord shows reactions in the order each emoji first went on, so a new order takes clearing them and adding the bot's back."""
+
+    def shown(self, rr: RR) -> list[str]:
+        return [reaction["emoji"] for reaction in self.ops.messages[rr.message_id]["reactions"]]
+
+    def rows(self, *pairs) -> list[dict]:
+        return [{"emoji": emoji, "roles": [str(role.id)]} for emoji, role in pairs]
+
+    async def test_saving_with_reorder_puts_the_reactions_in_the_rows_order_and_keeps_roles(self):
+        rr = await self.make((RED, self.red), (BLUE, self.blue))
+        await self.add(rr, RED, self.member)
+        self.assertIn(self.red, self.member.roles)
+        client = await self.client()
+        with mock.patch.object(self.ops, "add_reaction", wraps=self.ops.add_reaction) as added:
+            response = await client.patch(self.path(f"/reactionroles/{rr.message_id}"), json={"rows": self.rows((GREEN, self.green), (RED, self.red), (BLUE, self.blue)), "reorder": True})
+            self.assertEqual(response.status, 200, await response.text())
+            self.assertEqual([c.args[2] for c in added.call_args_list], [GREEN, RED, BLUE])
+            self.assertEqual(self.shown(rr), [GREEN, RED, BLUE])
+            self.assertTrue(all(reaction["me"] and reaction["count"] == 1 for reaction in self.ops.messages[rr.message_id]["reactions"]))
+            # Discord's report of the bot's own clear changes nothing more.
+            await self.rr.on_raw_reaction_clear(SimpleNamespace(guild_id=self.guild.id, channel_id=rr.channel_id, message_id=rr.message_id))
+            self.assertEqual(len(added.call_args_list), 3)
+        self.assertIn(self.red, self.member.roles)
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM rr_seen WHERE message_id = ?", (rr.message_id,)), 0)
+        self.assertEqual([o.emoji for o in (await self.rr.get(rr.message_id)).options], [GREEN, RED, BLUE])
+        actions = [row["action"] for row in await self.bot.activity_log.recent(self.guild.id)]
+        self.assertIn("reactionrole.reorder", actions)
+        await self.rr.settle()
+
+    async def test_a_clear_after_the_bots_own_is_answered_as_usual(self):
+        rr = await self.make((RED, self.red), (BLUE, self.blue))
+        client = await self.client()
+        response = await client.patch(self.path(f"/reactionroles/{rr.message_id}"), json={"rows": self.rows((BLUE, self.blue), (RED, self.red)), "reorder": True})
+        self.assertEqual(response.status, 200)
+        clear = SimpleNamespace(guild_id=self.guild.id, channel_id=rr.channel_id, message_id=rr.message_id)
+        await self.rr.on_raw_reaction_clear(clear)
+        await self.ops.clear_reactions(rr.channel_id, rr.message_id)  # someone clears the message by hand afterward
+        await self.rr.on_raw_reaction_clear(clear)
+        self.assertEqual(self.shown(rr), [BLUE, RED])
+        await self.rr.settle()
+
+    async def test_a_report_that_never_came_stops_counting_after_the_grace(self):
+        rr = await self.make((RED, self.red), (BLUE, self.blue))
+        await self.rr._save(rr, rr.copied(), reorder=True)
+        self.rr._reordering[rr.message_id] = time.monotonic() - 1
+        await self.ops.clear_reactions(rr.channel_id, rr.message_id)
+        await self.rr.on_raw_reaction_clear(SimpleNamespace(guild_id=self.guild.id, channel_id=rr.channel_id, message_id=rr.message_id))
+        self.assertEqual(self.shown(rr), [RED, BLUE])
+        await self.rr.settle()
+
+    async def test_without_reorder_a_new_emoji_goes_last_and_reactions_stay(self):
+        rr = await self.make((RED, self.red), (BLUE, self.blue))
+        await self.add(rr, RED, self.member)
+        client = await self.client()
+        response = await client.patch(self.path(f"/reactionroles/{rr.message_id}"), json={"rows": self.rows((GREEN, self.green), (RED, self.red), (BLUE, self.blue))})
+        self.assertEqual(response.status, 200)
+        self.assertEqual(self.shown(rr), [RED, BLUE, GREEN])
+        self.assertEqual(self.reactors(rr, RED), [self.member.id])
+        actions = [row["action"] for row in await self.bot.activity_log.recent(self.guild.id)]
+        self.assertNotIn("reactionrole.reorder", actions)
+        await self.rr.settle()
+
+    async def test_the_message_says_the_order_discord_shows(self):
+        rr = await self.make((RED, self.red), (BLUE, self.blue))
+        client = await self.client()
+        body = await (await client.get(self.path(f"/reactionroles/{rr.message_id}/message"))).json()
+        self.assertEqual(body["reactions"], [RED, BLUE])
+
+    async def test_reorder_takes_manage_messages_in_the_channel(self):
+        rr = await self.make((RED, self.red), (BLUE, self.blue))
+        manager = self.guild.role("Manager", 6, "manage_guild", "view_channel", "send_messages", "read_message_history")
+        self.admin.roles = [self.guild.default_role, manager]
+        client = await self.client()
+        response = await client.patch(self.path(f"/reactionroles/{rr.message_id}"), json={"rows": self.rows((BLUE, self.blue), (RED, self.red)), "reorder": True})
+        self.assertEqual(response.status, 400)
+        self.assertEqual((await response.json())["fields"], {"reorder": module.REORDER_NEEDS})
+        self.assertEqual(self.shown(rr), [RED, BLUE])
+        self.assertEqual([o.emoji for o in (await self.rr.get(rr.message_id)).options], [RED, BLUE])
+
+    async def test_an_emoji_the_bot_cant_use_stops_the_reorder_before_anything_changes(self):
+        custom = "<:far:123456789012345678>"
+        rr = await self.make((RED, self.red), (custom, self.blue))
+        client = await self.client()
+        form = {"rows": self.rows((custom, self.blue), (RED, self.red)), "reorder": True}
+        response = await client.patch(self.path(f"/reactionroles/{rr.message_id}"), json=form)
+        self.assertEqual(response.status, 400)
+        self.assertIn("isn't in the server that emoji comes from", (await response.json())["fields"]["reorder"])
+        self.assertEqual(self.shown(rr), [RED, custom])
+        self.assertEqual([o.emoji for o in (await self.rr.get(rr.message_id)).options], [RED, custom])
+        with mock.patch.object(self.bot, "get_emoji", return_value=SimpleNamespace(available=True)):
+            response = await client.patch(self.path(f"/reactionroles/{rr.message_id}"), json=form)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(self.shown(rr), [custom, RED])
+        await self.rr.settle()
+
+    async def test_a_refused_clear_keeps_the_old_order_and_still_adds_the_new_emoji(self):
+        rr = await self.make((RED, self.red), (BLUE, self.blue))
+        client = await self.client()
+        refusal = OpsError("The bot can't clear reactions there. It needs Manage Messages in that channel.")
+        with mock.patch.object(self.ops, "clear_reactions", side_effect=refusal):
+            response = await client.patch(self.path(f"/reactionroles/{rr.message_id}"), json={"rows": self.rows((GREEN, self.green), (RED, self.red), (BLUE, self.blue)), "reorder": True})
+        self.assertEqual(response.status, 200)
+        body = await response.json()
+        self.assertTrue(body["warnings"][0].startswith(module.OLD_ORDER))
+        self.assertEqual(self.shown(rr), [RED, BLUE, GREEN])
+        self.assertEqual(self.rr._reordering, {})
+        actions = [row["action"] for row in await self.bot.activity_log.recent(self.guild.id)]
+        self.assertNotIn("reactionrole.reorder", actions)
+        await self.rr.settle()
+
+    async def test_reorder_on_buttons_only_redraws_them(self):
+        """Buttons follow the rows on every save, so the flag clears nothing and asks for nothing more."""
+        rr = await self.make((RED, self.red), (BLUE, self.blue), mode="buttons")
+        manager = self.guild.role("Manager", 6, "manage_guild", "view_channel", "send_messages", "read_message_history")
+        self.admin.roles = [self.guild.default_role, manager]
+        client = await self.client()
+        with mock.patch.object(self.ops, "clear_reactions", wraps=self.ops.clear_reactions) as cleared:
+            response = await client.patch(self.path(f"/reactionroles/{rr.message_id}"), json={"mode": "buttons", "rows": self.rows((BLUE, self.blue), (RED, self.red)), "reorder": True})
+        self.assertEqual(response.status, 200, await response.text())
+        cleared.assert_not_called()
+        self.assertEqual([c["emoji"] for c in self.ops.messages[rr.message_id]["components"]], [BLUE, RED])
+        actions = [row["action"] for row in await self.bot.activity_log.recent(self.guild.id)]
+        self.assertNotIn("reactionrole.reorder", actions)
+
+    async def test_the_command_moves_an_emoji_to_a_place_after_a_confirm(self):
+        rr = await self.make((RED, self.red), (BLUE, self.blue), (GREEN, self.green))
+        await self.add(rr, BLUE, self.member)
+        ctx = self.context()
+        with mock.patch.object(self.rr, "_confirm", return_value=False):
+            await self.rr.rr_reorder.callback(self.rr, ctx, str(rr.message_id), GREEN, 1)
+        self.assertEqual(ctx.fails, ["Left everything as it was."])
+        self.assertEqual(self.shown(rr), [RED, BLUE, GREEN])
+        ctx = self.context()
+        with mock.patch.object(self.rr, "_confirm", return_value=True) as asked:
+            await self.rr.rr_reorder.callback(self.rr, ctx, str(rr.message_id), GREEN, 1)
+        self.assertIn(rr.url(), asked.call_args.args[1])
+        self.assertEqual(ctx.fails, [])
+        self.assertEqual(ctx.oks, [f"{GREEN} is number 1 on {rr.url()}."])
+        self.assertEqual(self.shown(rr), [GREEN, RED, BLUE])
+        self.assertEqual([o.emoji for o in (await self.rr.get(rr.message_id)).options], [GREEN, RED, BLUE])
+        self.assertIn(self.blue, self.member.roles)
+        actions = [row["action"] for row in await self.bot.activity_log.recent(self.guild.id)]
+        self.assertEqual(actions[0], "reactionrole.reorder")
+        await self.rr.settle()
+
+    async def test_the_command_skips_the_clear_when_the_message_already_shows_that_order(self):
+        rr = await self.make((RED, self.red), (BLUE, self.blue))
+        ctx = self.context()
+        with mock.patch.object(self.rr, "_confirm", return_value=True) as asked, mock.patch.object(self.ops, "clear_reactions", wraps=self.ops.clear_reactions) as cleared:
+            await self.rr.rr_reorder.callback(self.rr, ctx, str(rr.message_id), RED, 1)
+        asked.assert_not_called()
+        cleared.assert_not_called()
+        self.assertEqual(ctx.oks, [f"{RED} is number 1 on {rr.url()}."])
+
+    async def test_the_command_refuses_what_it_cant_do(self):
+        rr = await self.make((RED, self.red), (BLUE, self.blue))
+        cases = [
+            ((str(rr.message_id), GREEN, 1), "That emoji isn't on that message."),
+            ((str(rr.message_id), RED, 3), "That message has 2 emoji, so pick a place from 1 to 2."),
+            ((str(rr.message_id), "not an emoji", 1), "isn't an emoji."),
+        ]
+        for args, sentence in cases:
+            ctx = self.context()
+            with mock.patch.object(self.rr, "_confirm", return_value=True):
+                await self.rr.rr_reorder.callback(self.rr, ctx, *args)
+            self.assertEqual(len(ctx.fails), 1, args)
+            self.assertIn(sentence, ctx.fails[0])
+        ctx = self.context(author=self.mod)
+        self.mod.roles.append(self.guild.role("Manager", 6, "manage_guild", "view_channel", "read_message_history"))
+        self.mod.roles.remove(self.role_mod)
+        with mock.patch.object(self.rr, "_confirm", return_value=True):
+            await self.rr.rr_reorder.callback(self.rr, ctx, str(rr.message_id), BLUE, 1)
+        self.assertEqual(ctx.fails, [module.REORDER_NEEDS])
+        self.assertEqual(self.shown(rr), [RED, BLUE])
+
+
+class ClearRaceTest(Base):
+    """A clear of every reaction, by a reorder or by hand, against reactions still queued or being read. Members keep their roles."""
+
+    def flipped(self, rr: RR) -> RR:
+        previous = rr.copied()
+        rr.options.reverse()
+        for slot, option in enumerate(rr.options):
+            option.slot = slot
+        return previous
+
+    def clear_event(self, rr: RR) -> SimpleNamespace:
+        return SimpleNamespace(guild_id=self.guild.id, channel_id=rr.channel_id, message_id=rr.message_id)
+
+    async def test_a_reaction_queued_before_a_reorder_keeps_its_role_after_the_next_start(self):
+        rr = await self.make((RED, self.red), (BLUE, self.blue))
+        member = self.newcomer()
+        gate = asyncio.Event()
+        original = ReactionRoles._handle
+
+        async def held_back(cog, guild_id, user_id, queue, work):
+            await gate.wait()
+            return await original(cog, guild_id, user_id, queue, work)
+
+        with mock.patch.object(ReactionRoles, "_handle", held_back):
+            await self.rr.on_raw_reaction_add(self.reacted(rr, RED, member))
+            await self.rr._save(rr, self.flipped(rr), reorder=True)
+            await self.rr.on_raw_reaction_clear(self.clear_event(rr))
+            gate.set()
+            await self.rr.settle()
+        self.assertIn(self.red, member.roles, "the member reacted, so the role is theirs")
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM rr_seen WHERE message_id = ?", (rr.message_id,)), 0, "nothing on record for a reaction the clear took")
+        await self.rr.reconcile_message(rr.message_id)
+        await self.rr.settle()
+        self.assertIn(self.red, member.roles)
+
+    async def test_a_reaction_after_the_clear_goes_on_record(self):
+        rr = await self.make((RED, self.red), (BLUE, self.blue))
+        await self.rr._save(rr, self.flipped(rr), reorder=True)
+        member = self.newcomer()
+        await self.add(rr, RED, member)
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM rr_seen WHERE message_id = ? AND user_id = ?", (rr.message_id, member.id)), 1)
+
+    async def test_a_retry_from_before_a_clear_gives_the_role_and_leaves_no_record(self):
+        rr = await self.make((RED, self.red), (BLUE, self.blue))
+        member = self.newcomer()
+        before = time.time() - 30
+        await self.rr._save(rr, self.flipped(rr), reorder=True)
+        self.assertIsNotNone((await self.rr.get(rr.message_id)).cleared_at)
+        await self.rr._retry_due({"guild_id": self.guild.id, "user_id": member.id, "message_id": rr.message_id, "key": RED, "action": "added", "tries": 1, "at": before}, {})
+        await self.rr.settle()
+        self.assertIn(self.red, member.roles)
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM rr_seen WHERE message_id = ?", (rr.message_id,)), 0)
+        other = self.newcomer()
+        await self.rr._retry_due({"guild_id": self.guild.id, "user_id": other.id, "message_id": rr.message_id, "key": RED, "action": "added", "tries": 1}, {})
+        await self.rr.settle()
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM rr_seen WHERE message_id = ?", (rr.message_id,)), 0, "a retry stored without a time counts as older")
+
+    async def test_a_retry_carries_the_events_time(self):
+        rr = await self.make((RED, self.red))
+        work = module.Work("added", rr.message_id, key=RED, at=12345.0)
+        with mock.patch.object(self.bot.timers, "schedule", mock.AsyncMock()) as scheduled:
+            await self.rr._retry_later(self.guild.id, self.member.id, work)
+        self.assertEqual(scheduled.call_args.args[2]["at"], 12345.0)
+
+    async def test_a_clear_by_hand_is_noted_like_the_bots_own(self):
+        rr = await self.make((RED, self.red), (BLUE, self.blue))
+        await self.ops.clear_reactions(rr.channel_id, rr.message_id)
+        await self.rr.on_raw_reaction_clear(self.clear_event(rr))
+        self.assertIsNotNone((await self.rr.get(rr.message_id)).cleared_at)
+        first = (await self.rr.get(rr.message_id)).cleared_at
+        await asyncio.sleep(0.01)
+        await self.rr.on_raw_reaction_clear_emoji(SimpleNamespace(guild_id=self.guild.id, channel_id=rr.channel_id, message_id=rr.message_id, emoji=discord.PartialEmoji(name=RED)))
+        self.assertGreater((await self.rr.get(rr.message_id)).cleared_at, first)
+        await self.rr.settle()
+
+    async def test_a_reorder_during_a_catch_up_changes_nobodys_roles(self):
+        rr = await self.make((RED, self.red), (BLUE, self.blue))
+        members = [self.newcomer() for _ in range(3)]
+        for member in members:
+            await self.add(rr, RED, member)
+        self.ops.react_as(rr.message_id, RED, self.newcomer().id)  # one came while the bot was away, so the catch-up reads Red
+        original = self.ops.reaction_users
+        done = []
+
+        async def reading(channel_id, message_id, emoji, **kwargs):
+            if not done:
+                done.append(True)
+                await self.rr._save(rr, self.flipped(rr), reorder=True)
+            return await original(channel_id, message_id, emoji, **kwargs)
+
+        self.ops.reaction_users = reading
+        await self.rr.reconcile_message(rr.message_id)
+        await self.rr.settle()
+        self.assertEqual([self.red in member.roles for member in members], [True, True, True])
+
+    async def test_a_baseline_read_that_spans_a_clear_writes_nothing(self):
+        rr = await self.make((RED, self.red), fresh=False)
+        await self.db.run("DELETE FROM rr_synced WHERE message_id = ?", (rr.message_id,))
+        reader = self.newcomer()
+        self.ops.react_as(rr.message_id, RED, reader.id)
+        original = self.ops.reaction_users
+        done = []
+
+        async def reading(channel_id, message_id, emoji, **kwargs):
+            answer = await original(channel_id, message_id, emoji, **kwargs)
+            if not done:
+                done.append(True)
+                await self.rr._save(rr, rr.copied(), reorder=True)
+            return answer
+
+        self.ops.reaction_users = reading
+        await self.rr.reconcile_message(rr.message_id)
+        await self.rr.settle()
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM rr_seen WHERE message_id = ?", (rr.message_id,)), 0)
+
+    async def test_leftovers_read_across_a_clear_hand_out_nothing(self):
+        rr = await self.make((CHECK, self.verified), kind="verify")
+        waiting = self.newcomer()
+        self.ops.react_as(rr.message_id, CHECK, waiting.id)  # reacted while the bot was away
+        original = self.ops.reaction_users
+        done = []
+
+        async def reading(channel_id, message_id, emoji, **kwargs):
+            answer = await original(channel_id, message_id, emoji, **kwargs)
+            if not done:
+                done.append(True)
+                await self.ops.clear_reactions(rr.channel_id, rr.message_id)
+                await self.rr.on_raw_reaction_clear(self.clear_event(rr))
+            return answer
+
+        self.ops.reaction_users = reading
+        await self.rr.reconcile_message(rr.message_id)
+        await self.rr.settle()
+        self.assertNotIn(self.verified, waiting.roles, "the read spanned a clear, so it hands out nothing")
+        self.ops.reaction_users = original
+        await self.rr.reconcile_message(rr.message_id)
+        await self.rr.settle()
+        self.assertNotIn(self.verified, waiting.roles, "and the clear took the reaction, so nothing is left waiting")
+
+    async def test_the_command_refuses_when_the_rows_change_during_its_confirm(self):
+        rr = await self.make((RED, self.red), (BLUE, self.blue))
+        ctx = self.context()
+
+        async def someone_adds_a_row_meanwhile(ctx_, prompt):
+            changed = await self.rr.get(rr.message_id)
+            before = changed.copied()
+            changed.options.append(Option(2, GREEN, emoji_key(GREEN), [self.green.id]))
+            await self.rr._save(changed, before)
+            return True
+
+        with mock.patch.object(self.rr, "_confirm", someone_adds_a_row_meanwhile):
+            await self.rr.rr_reorder.callback(self.rr, ctx, str(rr.message_id), BLUE, 1)
+        self.assertEqual(ctx.fails, ["That message's reaction roles changed while you were deciding, so nothing moved. Run the command again."])
+        self.assertEqual([o.emoji for o in (await self.rr.get(rr.message_id)).options], [RED, BLUE, GREEN])
+        await self.rr.settle()
+
+
 class RealLibraryTest(GatewayTest):
     """The whole path through discord.py, with real objects and only the network faked."""
 
@@ -1935,6 +2270,29 @@ class RealLibraryTest(GatewayTest):
         self.assert_no_errors()
         methods = [(m, u.replace(self.base(), "")) for m, u in self.urls]
         self.assertIn(("DELETE", f"/guilds/{self.guild_id}/members/{self.mod_id}/roles/{self.role_member['id']}"), methods)
+
+    async def test_a_reorder_reaches_discord_as_one_clear_then_the_bots_reactions_in_order(self):
+        rr = await self.make(RED)
+        rr.options.append(Option(1, BLUE, emoji_key(BLUE), [int(self.role_member["id"])]))
+        await self.rr._save(rr, None, fresh=True)
+        previous = rr.copied()
+        rr.options.reverse()
+        for slot, option in enumerate(rr.options):
+            option.slot = slot
+        self.urls.clear()
+        await self.rr._save(rr, previous, reorder=True)
+        calls = [(m, unquote(u.replace(self.base(), ""))) for m, u in self.urls if "/reactions" in u]
+        where = f"/channels/{rr.channel_id}/messages/{rr.message_id}/reactions"
+        self.assertEqual(calls, [("DELETE", where), ("PUT", f"{where}/{BLUE}/@me"), ("PUT", f"{where}/{RED}/@me")])
+        self.urls.clear()
+        clear = {"channel_id": str(rr.channel_id), "message_id": str(rr.message_id), "guild_id": str(self.guild_id)}
+        self.bot._connection.parse_message_reaction_remove_all(clear)
+        await self.finish()
+        self.assertEqual([u for m, u in self.urls if "/reactions" in u], [])
+        self.bot._connection.parse_message_reaction_remove_all(clear)
+        await self.finish()
+        self.assert_no_errors()
+        self.assertEqual([m for m, u in self.urls if "/reactions" in u], ["PUT", "PUT"])
 
     def press(self, message: dict, custom_id: str, kind: int, *, values=None) -> None:
         data = {"custom_id": custom_id, "component_type": kind}
@@ -2070,9 +2428,13 @@ class RealLibraryTest(GatewayTest):
         rr = await self.make(RED)
         choices = await self.autocomplete("remove", [{"name": "role", "type": 3, "value": "mem", "focused": True}])
         self.assertEqual([c["name"] for c in choices], ["Member"])
-        choices = await self.autocomplete("normal", [{"name": "message_id", "type": 3, "value": "", "focused": True}])
+        choices = await self.autocomplete("reorder", [{"name": "message_id", "type": 3, "value": "", "focused": True}])
         self.assertEqual(choices[0]["value"], str(rr.message_id))
         self.assertIn("general", choices[0]["name"])
+        message = {"name": "message_id", "type": 3, "value": str(rr.message_id)}
+        choices = await self.autocomplete("reorder", [message, {"name": "emoji", "type": 3, "value": "", "focused": True}])
+        self.assertEqual([c["value"] for c in choices], [RED])
+        self.assertEqual(choices[0]["name"], f"{RED} Member")
 
     async def run_slash(self, command: str, options: list[dict], *, user_id: int | None = None) -> None:
         data = {"id": str(gateway_id()), "name": "reactionrole", "type": 1, "options": [{"name": command, "type": 1, "options": options}], "resolved": {}}
@@ -2089,8 +2451,14 @@ class RealLibraryTest(GatewayTest):
 
     async def test_an_ordinary_member_is_refused_by_the_command_check(self):
         rr = await self.make(RED)
-        await self.run_slash("normal", [{"name": "message_id", "type": 3, "value": str(rr.message_id)}], user_id=self.member_id)
+        await self.run_slash("modify", [{"name": "choice", "type": 3, "value": "unique"}, {"name": "message_id", "type": 3, "value": str(rr.message_id)}], user_id=self.member_id)
         self.assertEqual((await self.rr.get(rr.message_id)).kind, "normal")
+
+    async def test_reorder_by_slash_command_reaches_the_command(self):
+        rr = await self.make(RED, mode="buttons")
+        await self.run_slash("reorder", [{"name": "message_id", "type": 3, "value": str(rr.message_id)}, {"name": "emoji", "type": 3, "value": RED}, {"name": "place", "type": 4, "value": 1}])
+        reply = next(body for method, path, body in self.net.calls if path.startswith("/webhooks/"))
+        self.assertIn("is number 1", reply["content"])
 
     async def test_every_reactionrole_command_succeeds_through_the_library(self):
         """Valid input on every slash command, which the smoke test's made-up values mostly don't reach."""
@@ -2117,10 +2485,10 @@ class RealLibraryTest(GatewayTest):
             ("fix", [message]),
             ("modify", [{"name": "choice", "type": 3, "value": "unique"}, message]),
             ("modify", [{"name": "choice", "type": 3, "value": "limit"}, message, {"name": "value", "type": 3, "value": "2"}]),
-            ("normal", [message]),
+            ("modify", [{"name": "choice", "type": 3, "value": "normal"}, message]),
             ("temp", [message, {"name": "duration", "type": 3, "value": "1h"}]),
             ("limit", [message, {"name": "limit", "type": 4, "value": 3}]),
-            ("normal", [message]),
+            ("modify", [{"name": "choice", "type": 3, "value": "normal"}, message]),
             ("link", [{"name": "message_ids", "type": 3, "value": f"{rr.message_id} {other.message_id}"}]),
             ("links", []),
             ("unlink", [message]),

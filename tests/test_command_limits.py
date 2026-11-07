@@ -4,12 +4,12 @@ import re
 import discord
 from discord import app_commands
 
+from captainguild.core.tree import CONTEXT_MENUS_PER_TYPE
 from captainguild.modules import load_all
 from tests.fakes import BotTest
 
 NAME = re.compile(r"^[-_'\wऀ-ॿ฀-๿]{1,32}$")
 GLOBAL_CHAT_COMMANDS = 100
-CONTEXT_MENUS_PER_TYPE = 5
 PER_LEVEL = 25
 COMMAND_CHARACTERS = 8000
 
@@ -56,6 +56,22 @@ class CommandLimitsTest(BotTest):
             data = command.to_dict(self.bot.tree)
             self.check(data, data["name"])
             self.assertLessEqual(characters(data), COMMAND_CHARACTERS, f"{data['name']}: too many characters in total")
+
+    async def test_every_pack_together_fits_one_servers_limits(self):
+        """A server with every command pack on holds all of their commands, beside the shared ones. A pack command never takes a shared command's name."""
+        packs = [command for commands in self.bot.pack_commands.values() for command in commands]
+        chat = [c for c in packs if isinstance(c, (app_commands.Group, app_commands.Command))]
+        menus = [c for c in packs if isinstance(c, app_commands.ContextMenu)]
+        self.assertLessEqual(len(chat), GLOBAL_CHAT_COMMANDS)
+        for kind in (discord.AppCommandType.user, discord.AppCommandType.message):
+            self.assertLessEqual(len([m for m in menus if m.type == kind]), CONTEXT_MENUS_PER_TYPE)
+        shared = {(c.name, getattr(c, "type", discord.AppCommandType.chat_input)) for c in self.bot.tree.get_commands()}
+        for command in packs:
+            self.assertNotIn((command.name, getattr(command, "type", discord.AppCommandType.chat_input)), shared, command.name)
+            if not isinstance(command, app_commands.ContextMenu):
+                data = command.to_dict(self.bot.tree)
+                self.check(data, data["name"])
+                self.assertLessEqual(characters(data), COMMAND_CHARACTERS, f"{data['name']}: too many characters in total")
 
     async def test_prefix_and_slash_names_agree_and_nothing_collides(self):
         names = [c.qualified_name for c in self.bot.commands]

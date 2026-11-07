@@ -36,6 +36,11 @@ class Module(commands.Cog):
     # Rows that carry their own guild_id and hang off a row in another table with no foreign key, as {table: {column: "parent_table.parent_column"}}. A restore refuses a row whose parent isn't in this server, keeps it with its parent as one unit, and follows the parent when it takes a new number. tests.test_backup fails when a table like this isn't named here.
     child_links: ClassVar[dict[str, dict[str, str]]] = {}
 
+    # A feature whose slash commands and right-click menus go only into the servers that switch it on. Discord allows 100 slash commands for
+    # every server together and another 100 in each server, so a pack costs the shared list nothing. Its settings need an `enabled` field,
+    # and everything it does on its own, such as answering messages, checks `on_in` first.
+    command_pack: ClassVar[bool] = False
+
     # The most rows a server can have in a table, as the save paths enforce them. A restore holds to the same numbers, since a file passes through none of those paths and one server's rows can slow a feature for all of them.
     row_limits: ClassVar[dict[str, int]] = {}
 
@@ -47,6 +52,12 @@ class Module(commands.Cog):
     def cfg(self, guild_id: int) -> dict:
         """This module's settings for a server. Read-only: change them with `save`."""
         return self.bot.settings.get(guild_id, self.key)
+
+    def on_in(self, guild_id: int | None) -> bool:
+        """Whether this feature is switched on in a server. A feature that isn't a command pack always is."""
+        if not self.command_pack:
+            return True
+        return guild_id is not None and bool(self.cfg(guild_id).get("enabled"))
 
     async def on_load(self) -> None:
         pass

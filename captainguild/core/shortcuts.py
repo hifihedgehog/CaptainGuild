@@ -57,6 +57,10 @@ SHORTCUTS = {
     "vc access grant": "vc_access_grant", "vc access revoke": "vc_access_revoke", "vc access status": "vc_access_status", "mini_mute apply": "mini_mute", "mini_mute lift": "mini_mute_lift",
     # slash names that are single words, with the spaced spellings of them kept for typing
     "proposal submit": "submit_proposal", "fun_roles deploy": "deploy_fun_roles", "fun_roles delete": "delete_fun_roles",
+    # role rules: the names of the commands role sets had before
+    "create_roleset": "rolerule create", "list_rolesets": "rolerule", "delete_roleset": "rolerule delete", "add_tracked_roles": "rolerule add_tracked",
+    "remove_tracked_roles": "rolerule remove_tracked", "change_target_role": "rolerule change_target", "add_ignored_role": "rolerule set_ignored",
+    "remove_ignored_role": "rolerule clear_ignored", "add_required_role": "rolerule set_required", "remove_required_role": "rolerule clear_required", "sync_roles": "rolerule sync",
     # embeds
     "cembed": "embed custom", "customembed": "embed custom", "ecembed": "embed editcustom", "editembed": "embed edit", "embedsource": "embed source", "embedunhide": "embed unhide",
 }

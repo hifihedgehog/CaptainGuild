@@ -169,6 +169,9 @@ textarea { min-height: 90px; resize: vertical; }
 .icon-btn { background: none; border: 0; padding: 4px; color: var(--text-soft); cursor: pointer; border-radius: var(--radius); display: inline-flex; }
 .icon-btn:hover { color: #fff; background: var(--input); }
 .icon-btn.danger:hover { color: var(--bad); }
+.rr-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: start; }
+.rr-tools { gap: 2px; flex-wrap: nowrap; }
+@media (max-width: 560px) { .rr-row { grid-template-columns: auto minmax(0, 1fr); } .rr-tools { grid-column: 1 / -1; justify-content: flex-end; } }
 .save-bar {
   position: fixed; bottom: 16px; left: calc(var(--sidebar-width) + 24px); right: 24px; z-index: 25; display: flex; align-items: center; gap: 10px; padding: 10px 16px;
   background: var(--panel-deep); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 18px rgb(0 0 0 / 45%);

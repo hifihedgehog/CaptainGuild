@@ -72,20 +72,26 @@ const newRow = (emoji) => ({ emoji: emoji || '', roles: [], max: {}, label: '', 
 const withKeys = (rows) => rows.map((row) => ({ ...row, _key: ++rowCounter }));
 const rowsForServer = (rows) => rows.map(({ _key, open, ...row }) => row);
 const typeHelp = (value) => (TYPES.find((t) => t.value === value) || TYPES[0]).help;
+const emojiKey = (emoji) => {
+  const custom = /^<a?:[^:>]+:(\d+)>$/.exec(emoji || '');
+  return custom ? custom[1] : (emoji || '').replace(/\ufe0f/g, '');
+};
 const modeHelp = (value) => (MODES.find((m) => m.value === value) || MODES[0]).help;
 
-function RowEditor({ row, index, count, mode, errors, onChange, onRemove, onMove }) {
+function RowEditor({ row, index, count, mode, errors, onChange, onRemove, onMove, onMoveTo }) {
   const guild = useGuild();
   const set = (key, value) => onChange({ ...row, [key]: value });
   const prefix = `rows.${index}`;
   const firstRole = row.roles.length ? roleName(guild, row.roles[0]) : 'The role\'s name';
   return html`<div class="field-edit">
-    <div style=${{ display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr) auto', gap: '10px', alignItems: 'start' }}>
+    <div class="rr-row">
       <div style=${{ paddingTop: '1px' }}><${EmojiButton} value=${row.emoji} onChange=${(emoji) => set('emoji', emoji)} onClear=${mode === 'reactions' ? null : () => set('emoji', '')} /></div>
       <${RolePicker} multi value=${row.roles} onChange=${(roles) => set('roles', roles)} placeholder="Pick the roles this hands out" error=${errors[prefix + '.roles']} />
-      <div class="row" style=${{ gap: '2px', flexWrap: 'nowrap' }}>
+      <div class="row rr-tools">
+        ${count > 2 && html`<button type="button" class="icon-btn" aria-label="Move to the top" title="Move to the top" disabled=${index === 0} onClick=${() => onMoveTo(index, 0)}><${Icon} name="arrow-up-to-line" /></button>`}
         <button type="button" class="icon-btn" aria-label="Move up" disabled=${index === 0} onClick=${() => onMove(index, -1)}><${Icon} name="arrow-up" /></button>
         <button type="button" class="icon-btn" aria-label="Move down" disabled=${index === count - 1} onClick=${() => onMove(index, 1)}><${Icon} name="arrow-down" /></button>
+        ${count > 2 && html`<button type="button" class="icon-btn" aria-label="Move to the bottom" title="Move to the bottom" disabled=${index === count - 1} onClick=${() => onMoveTo(index, count - 1)}><${Icon} name="arrow-down-to-line" /></button>`}
         <button type="button" class="icon-btn" aria-label="Maximum holders" title="Limit how many members can hold each role" aria-pressed=${!!row.open} onClick=${() => set('open', !row.open)}><${Icon} name="users" /></button>
         <button type="button" class="icon-btn danger" aria-label="Remove this row" onClick=${onRemove}><${Icon} name="trash-2" /></button>
       </div>
@@ -111,13 +117,9 @@ function RowEditor({ row, index, count, mode, errors, onChange, onRemove, onMove
 function RowsEditor({ rows, onChange, mode, errors, linkButtons }) {
   const [picking, setPicking] = useState(false);
   const most = mode === 'buttons' ? Math.max(0, MAX_ROWS.buttons - linkButtons) : MAX_ROWS[mode];
-  const keyOf = (emoji) => {
-    const custom = /^<a?:[^:>]+:(\d+)>$/.exec(emoji || '');
-    return custom ? custom[1] : (emoji || '').replace(/\ufe0f/g, '');
-  };
   const addEmoji = (emoji) => {
     setPicking(false);
-    if (rows.some((row) => row.emoji && keyOf(row.emoji) === keyOf(emoji))) {
+    if (rows.some((row) => row.emoji && emojiKey(row.emoji) === emojiKey(emoji))) {
       toast('That emoji is on a row already. Put several roles on that row instead.', 'bad');
       return;
     }
@@ -130,13 +132,19 @@ function RowsEditor({ rows, onChange, mode, errors, linkButtons }) {
     [next[index], next[target]] = [next[target], next[index]];
     onChange(next);
   };
+  const moveTo = (index, target) => {
+    const next = [...rows];
+    const [moving] = next.splice(index, 1);
+    next.splice(target, 0, moving);
+    onChange(next);
+  };
   return html`<div>
     <h4>Emoji and roles</h4>
     ${errors.rows && html`<div class="error" style=${{ marginBottom: '8px' }}>${errors.rows}</div>`}
     ${rows.length === 0 && html`<p class="muted">Add an emoji, then pick the roles it hands out.</p>`}
     ${rows.map((row, index) => html`<${RowEditor} key=${row._key} row=${row} index=${index} count=${rows.length} mode=${mode} errors=${errors}
       onChange=${(next) => onChange(rows.map((r) => (r._key === row._key ? next : r)))}
-      onRemove=${() => onChange(rows.filter((r) => r._key !== row._key))} onMove=${move} />`)}
+      onRemove=${() => onChange(rows.filter((r) => r._key !== row._key))} onMove=${move} onMoveTo=${moveTo} />`)}
     <div style=${{ position: 'relative', marginTop: '10px' }}>
       ${rows.length < most ? html`<div class="row">
         <button type="button" class="btn success" style=${{ flex: 1 }} onClick=${() => setPicking(!picking)}><${Icon} name="smile-plus" /> Add emoji</button>
@@ -168,7 +176,7 @@ function ControlsPreview({ mode, rows, placeholder }) {
 }
 
 // Everything about how a message hands out roles, the same in both forms.
-function RoleSettings({ form, set, errors, foreign, rules, linkButtons, others }) {
+function RoleSettings({ form, set, errors, foreign, rules, linkButtons, others, orderNotice = null }) {
   const guild = useGuild();
   const [advanced, setAdvanced] = useState(form.linked.length > 0 || form.destructOn);
   const chosen = form.rows.flatMap((row) => row.roles);
@@ -176,6 +184,7 @@ function RoleSettings({ form, set, errors, foreign, rules, linkButtons, others }
   const linkOptions = others.map((row) => ({ value: row.message_id, label: `#${channelName(guild, row.channel_id)}: ${row.rows.flatMap((r) => r.roles).map((id) => roleName(guild, id)).join(', ') || 'no roles'}` }));
   return html`<div>
     <${RowsEditor} rows=${form.rows} onChange=${(rows) => set('rows', rows)} mode=${form.mode} errors=${errors} linkButtons=${linkButtons} />
+    ${orderNotice}
     ${warnings.map((text) => html`<${Notice} key=${text} kind="warn">${text}<//>`)}
     <hr class="rule" />
     <${Select} label="How members pick" value=${form.mode} options=${foreign ? MODES.filter((m) => m.value === 'reactions') : MODES} disabled=${foreign} onChange=${(v) => set('mode', v)} help=${modeHelp(form.mode)} error=${errors.mode} />
@@ -317,10 +326,22 @@ function EditModal({ row, data, onClose, onDone }) {
   }, [row.message_id]);
 
   const readonly = !message || message.readonly;
+  const wanted = form.mode === 'reactions' ? form.rows.filter((r) => r.emoji).map((r) => emojiKey(r.emoji)) : [];
+  const onMessage = (message && message.reactions) || null;
+  const kept = onMessage ? onMessage.filter((key) => wanted.includes(key)) : [];
+  const willShow = kept.concat(wanted.filter((key) => !kept.includes(key)));
+  const outOfOrder = !!onMessage && form.mode === 'reactions' && willShow.join(' ') !== wanted.join(' ');
+  const emojiOf = Object.fromEntries(form.rows.map((r) => [emojiKey(r.emoji), r.emoji]));
+  const orderNotice = outOfOrder && html`<${Notice} kind="warn">
+    <p style=${{ margin: '0 0 8px' }}>Discord shows reactions in the order each emoji first went on, so after saving, the message would show ${willShow.map((key) => html`<${EmojiView} key=${key} value=${emojiOf[key]} size=${18} />`)}.</p>
+    <${Switch} label="Put the reactions in the order of the rows" value=${!!form.reorder} onChange=${(v) => set('reorder', v)} error=${errors.reorder}
+      help="The bot takes every reaction off the message and puts its own back in this order. Members keep their roles, but their reactions go. Anyone who wants to drop a role afterward reacts and then takes the reaction off." />
+  <//>`;
   const save = async () => {
     setBusy(true);
     try {
       const body = serverFields(form);
+      if (outOfOrder && form.reorder) body.reorder = true;
       if (!readonly && JSON.stringify(payload) !== original.current) body.payload = payload;
       const result = await api.patch(`/reactionroles/${row.message_id}`, body);
       showWarnings(result.warnings);
@@ -386,7 +407,7 @@ function EditModal({ row, data, onClose, onDone }) {
       <label class="label">The message</label><div style=${{ marginBottom: '16px' }}><${MessagePreview} value=${message.payload} name=${message.author_name} /></div>`}
     ${message && !message.readonly && message.payload && html`<${ContentEditor} payload=${payload} onChange=${setPayload} form=${form} error=${errors.payload} />`}
     <hr class="rule" />
-    <${RoleSettings} form=${form} set=${set} errors=${errors} foreign=${!!message && message.readonly} rules=${data} linkButtons=${(payload.buttons || []).length} others=${others} />
+    <${RoleSettings} form=${form} set=${set} errors=${errors} foreign=${!!message && message.readonly} rules=${data} linkButtons=${(payload.buttons || []).length} others=${others} orderNotice=${orderNotice} />
     <hr class="rule" />
     <div class="row" style=${{ marginBottom: '14px' }}>
       <button type="button" class="btn" onClick=${fix}><${Icon} name="refresh-cw" size=${14} /> ${form.mode === 'reactions' ? 'Put back missing reactions' : 'Put back the controls'}</button>

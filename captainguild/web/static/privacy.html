@@ -35,6 +35,7 @@
         <tr><td>Suggestions: their text, the author's name and avatar link, the vote totals and the decision</td><td>The server's record of what was suggested</td><td>Until staff delete them</td></tr>
         <tr><td>Who reacted on a reaction role message, and who had the bot repeat a message</td><td>To hand out roles once, and to tell staff who sent what</td><td>A reaction record goes when the message stops handing out roles. Who had the bot repeat a message has no set end.</td></tr>
         <tr><td>Tags, triggers, posted messages and their earlier versions, saved messages, scheduled posts, server settings, and who changed them</td><td>The server's setup and its change history</td><td>Until staff delete them. The change history keeps each server's newest 5,000 entries.</td></tr>
+        <tr><td>A role rules sync that's running: who started it, its progress post and how far it has got</td><td>To pick the sync up again after a restart</td><td>Until the sync finishes</td></tr>
         <tr><td>Which roles could read a deleted channel</td><td>So log search shows what was said there only to those who could read it</td><td>As long as that channel's log entries last</td></tr>
         <tr><td>Backup snapshots: a copy of a server's stored data, and copies of its XP board</td><td>To put a server back after a mistake</td><td>The newest 14 scheduled snapshots by default, and each server can change it. Staff delete the ones taken by hand. Someone's rows in a snapshot stay until that snapshot goes, except levels, which come out of the XP copies when deleted.</td></tr>
         <tr><td>Which commands you ran, counted by day</td><td>Command use numbers for staff</td><td>90 days</td></tr>
@@ -42,7 +43,7 @@
         <tr><td>Your Discord ID, name and avatar link when you sign in to the dashboard</td><td>To keep you signed in</td><td>14 days from sign-in</td></tr>
       </tbody>
     </table>
-    <p>You sign in with a private link from the bot's <code>/dashboard</code> command, which works once and expires after five minutes. A site set up to use Discord's own sign-in button asks Discord only who you are, then revokes the token right away and never stores it. No IP addresses are stored.</p>
+    <p>You sign in with Discord. The site asks Discord only who you are, then revokes the token right away and never stores it. The bot's <code>/dashboard</code> command also answers with a private sign-in link, which works once and expires after five minutes. No IP addresses are stored.</p>
 
     <h2>Who can see it</h2>
     <p>Staff of the server the data belongs to, through the dashboard and the log channels they set up, and the person who runs the machine. It isn't sold, shared with anyone else, or used to train machine learning models.</p>

@@ -172,7 +172,7 @@ class GonePostsTest(SuggestionEdge):
         await self.idea()
         row = await self.suggestions.decide(self.guild_id, 1, "approved", moderator=Actor(self.mods[0], "a"), reason=None)
         self.bot._connection.parse_message_delete({"id": str(row["entry_message_id"]), "channel_id": str(self.channel_id), "guild_id": str(self.guild_id)})
-        await self.settle(0.1)
+        await self.settle()  # returns once the delete's handlers finish, however busy the machine is
         fresh = await self.suggestions.get(self.guild_id, 1)
         self.assertEqual((fresh["entry_message_id"], fresh["entry_channel_id"]), (None, None))
 
@@ -180,7 +180,7 @@ class GonePostsTest(SuggestionEdge):
         row = await self.idea()
         await self.setup(channel_id=self.channel_id)
         self.bot._connection.parse_message_delete({"id": str(row["message_id"]), "channel_id": str(self.log_id), "guild_id": str(self.guild_id)})
-        await self.settle(0.1)
+        await self.settle()  # returns once the delete's handlers finish, however busy the machine is
         self.assertIsNone((await self.suggestions.get(self.guild_id, 1))["message_id"])
 
 

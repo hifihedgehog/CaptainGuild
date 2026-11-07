@@ -19,7 +19,8 @@ Captain Guild is a self-hosted Discord bot with a web dashboard. One process run
 | Automod | Spam, links, invites, mentions, caps, bad words, unsafe files and honeypot channels, with a punishment per rule and a dry run to test a rule first. |
 | Logging | Message, member, server and voice events in the channels you pick, naming who did it, with a search page for everything logged. |
 | Reports | Members report a message or a person from the right-click menu. Staff get the evidence, the person's history and a checklist in one thread. |
-| Reaction roles | Roles from reactions, buttons or menus, with limits, one-only groups, verify gates and timed roles. |
+| Reaction roles | Roles from reactions, buttons or menus, with limits, one-only groups, verify gates and timed roles. Put a message's emoji in a new order and its reactions follow. |
+| Role rules | Roles that follow from the roles a member holds: up to ten conditions per rule, roles to add and remove, and rules that keep a role in sync. A preview shows who would change before you save. `/mass_mention` pings every member who holds all of the roles you name. |
 | Posts | An editor with live preview, a version history for each post with one-click revert, scheduled posting, and a tool that reposts messages another bot wrote so you can edit them. |
 | Tags and triggers | Custom commands and automatic replies in a small template language with variables, math, conditions and embeds. |
 | Voice | Temporary mutes and deafens, voice access requests with requirements, a trusted tier for short mutes with an optional vote, and roles held while in a channel. |
@@ -39,7 +40,7 @@ A server's staff can download its whole setup and history as one file from the d
 
 You need Python 3.12 or newer and a reverse proxy with HTTPS. The pinned install from `requirements.lock` takes Python 3.13.
 
-1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications). Turn on **Server Members Intent** and **Message Content Intent**, and leave Presence off. Turn off **Public Bot**, so only you can add it to a server.
+1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications). Turn on **Server Members Intent** and **Message Content Intent**, and leave Presence off. Turn off **Public Bot**, so only you can add it to a server. On the OAuth2 page, add `https://your.site/login/callback` under Redirects, and copy the client secret.
 2. Install it:
    ```sh
    git clone https://github.com/hifihedgehog/CaptainGuild.git
@@ -50,7 +51,7 @@ You need Python 3.12 or newer and a reverse proxy with HTTPS. The pinned install
    cp .env.example .env
    chmod 600 .env
    ```
-   Put the printed key in `.env` as `MASTER_KEY`, with your bot token as `DISCORD_TOKEN`. Back up the key on its own, away from the databases. They open only with this key.
+   Put the printed key in `.env` as `MASTER_KEY`, your bot token as `DISCORD_TOKEN` and the client secret as `DISCORD_CLIENT_SECRET`. Back up the key on its own, away from the databases. They open only with this key.
 3. Run it:
    ```sh
    python -m captainguild --public-url https://your.site --port 8893 --data data
@@ -58,9 +59,9 @@ You need Python 3.12 or newer and a reverse proxy with HTTPS. The pinned install
    It creates the databases on the first run and listens on `127.0.0.1`. Its log has the link for adding the bot to your server. `captainguild.service` is a hardened systemd unit. To run it under pm2 with its packages kept apart from the machine's Python, install them on Python 3.13 with `pip install --target lib -r requirements.lock` and start `CaptainGuild.py`.
 4. Point your proxy at that port.
 5. Add the bot to your server and move its role above every role it hands out. Discord doesn't let a bot give or take a role at or above its own.
-6. Type `/dashboard` in Discord. The bot answers with a private link that signs you in.
+6. Open your site and click Dashboard. Discord asks you to confirm who you are, and then you pick a server.
 
-To sign in with Discord's own button instead of `/dashboard`, add `https://your.site/login/callback` as an OAuth2 redirect in the Developer Portal and put the application's client secret in `.env` as `DISCORD_CLIENT_SECRET`.
+Without a client secret, the site signs people in with a private link from the bot's `/dashboard` command instead.
 
 ### Getting the data back
 

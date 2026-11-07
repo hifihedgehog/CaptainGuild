@@ -12,6 +12,8 @@ def load_all() -> list[type[Module]]:
     from .voice import Voice
     from .reactionroles import ReactionRoles
     from .roles import Roles
+    from .mentions import Mentions
+    from .rolerules import RoleRules
     from .tags import Tags
     from .triggers import Triggers
     from .feeds import Feeds
@@ -35,4 +37,4 @@ def load_all() -> list[type[Module]]:
     from .config import Config
     from .mydata import MyData
 
-    return [Config, MyData, Autoroles, Moderation, Automod, Logs, Reports, Voice, ReactionRoles, Roles, Tags, Triggers, Feeds, Notifications, Greetings, Starboard, Embeds, Suggestions, Proposals, Levels, VoiceLink, Sticky, AutoPurge, Personalize, Utilities, Fun, Games, Backup, Setup]
+    return [Config, MyData, Autoroles, Moderation, Automod, Logs, Reports, Voice, ReactionRoles, Roles, RoleRules, Mentions, Tags, Triggers, Feeds, Notifications, Greetings, Starboard, Embeds, Suggestions, Proposals, Levels, VoiceLink, Sticky, AutoPurge, Personalize, Utilities, Fun, Games, Backup, Setup]

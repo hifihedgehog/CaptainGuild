@@ -70,8 +70,14 @@ class AddedByTest(GatewayTest):
         who = self.person()
         await self.bot.on_guild_join(self.guild_with(self.entry(self.bot_id, who)))
         self.assertEqual(len(who.sent), 1)
-        self.assertIn("/dashboard", who.sent[0])
+        self.assertIn("Open https://bot.example and sign in", who.sent[0])
         self.assertIn("Fresh Server", who.sent[0])
+
+    async def test_a_bot_with_no_site_points_at_the_command(self):
+        self.bot.public_url = ""
+        who = self.person()
+        await self.bot.on_guild_join(self.guild_with(self.entry(self.bot_id, who)))
+        self.assertIn("Run /dashboard there", who.sent[0])
 
     async def test_another_bots_entry_isnt_ours(self):
         who = self.person()

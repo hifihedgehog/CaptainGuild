@@ -409,6 +409,7 @@ async def _seed_samples(bot: Bot) -> None:
         "INSERT INTO rr_pairs (guild_id, message_id, slot, emoji, emoji_key, role_id, label) VALUES (?, ?, 0, ?, ?, ?, ?)",
         (GUILD, colors, "\N{BELL}", "\N{BELL}", MEMBER_ROLE, "Member"),
     )
+    await bot.ops.add_reaction(channels["roles"], colors, "\N{BELL}")  # the bot's own reaction, as on Discord
     await db.run(
         "INSERT INTO starboard_entries (guild_id, message_id, channel_id, author_id, stars, star_channel_id, star_message_id, preview, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (GUILD, 900000000000002001, channels["general"], USER, 7, channels["general"], 900000000000002002, "The new map looks great.", now - 86400),
@@ -432,6 +433,14 @@ async def _seed_samples(bot: Bot) -> None:
         ("voicelink", {"links": [{"channel_id": channels["Lounge"], "roles": [VET_ROLE]}]}),
         ("levels", {"rewards": [{"level": 5, "role_id": MEMBER_ROLE}, {"level": 20, "role_id": VET_ROLE}]}),
         ("proposals", {"channel_id": channels["announcements"], "moderator_role": MOD_ROLE}),
+        ("rolerules", {"log_channel": channels["mod-log"], "rules": [
+            {"name": "Veterans are members", "enabled": True, "keep_in_sync": True, "add": [MEMBER_ROLE], "remove": [],
+             "conditions": [{"type": "has_some", "roles": [VET_ROLE], "count": 0}, {"type": "lacks_all", "roles": [MUTED_ROLE], "count": 0}]},
+            {"name": "Muted lose veteran", "enabled": True, "keep_in_sync": False, "add": [], "remove": [VET_ROLE],
+             "conditions": [{"type": "has_all", "roles": [MUTED_ROLE], "count": 0}]},
+            {"name": "Two staff roles", "enabled": False, "paused": "", "keep_in_sync": True, "add": [VET_ROLE], "remove": [],
+             "conditions": [{"type": "at_least", "roles": [MOD_ROLE, OWNER_ROLE], "count": 2}]},
+        ]}),
     ):
         await bot.settings.save(GUILD, module, form, actor=admin)
     await db.run("UPDATE activity SET user_id = ?, user_name = ? WHERE guild_id = ? AND user_id IS NULL", (USER, "Demo Admin", GUILD))

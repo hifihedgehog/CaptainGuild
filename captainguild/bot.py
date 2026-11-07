@@ -29,6 +29,8 @@ from .core.settings import Actor, Settings
 from .core.shortcuts import SHORTCUTS, expand_line
 from .core.signin import SignInLinks
 from .core.timers import Timers
+from .core.tree import Tree
+from .core.webhooks import Webhooks
 from .core.usage import plain_error
 from .core.validate import Field, Invalid, Schema, ValidationError, list_of, snowflakes, text
 from .db import Database
@@ -115,6 +117,7 @@ class Bot(commands.Bot):
             max_messages=None,  # deleted and edited messages come from our own store, through raw events
             allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, replied_user=False),
             activity=discord.CustomActivity(name="/help"),
+            tree_cls=Tree,
         )
         self.db = db
         self.message_db = message_db
@@ -133,10 +136,14 @@ class Bot(commands.Bot):
         self._member_list_task: asyncio.Future | None = None
         self._timer_start: asyncio.Future | None = None
         self.logs = LogSink(self)
+        self.webhooks = Webhooks(self)
         self.audit = AuditWatcher()
         self.ops = DiscordOps(self)
         self.modules: list[Module] = []
         self.unknown_command_handlers: list[UnknownCommandHandler] = []
+        # A command pack's slash commands and menus, by module key. They go into each server that switches the pack on.
+        self.pack_commands: dict[str, list[Any]] = {}
+        self._pack_locks: dict[int, asyncio.Lock] = {}
         self.add_check(self._check_command)
         self.tree.on_error = self._on_tree_error
         self.after_invoke(self._after_command)
@@ -167,6 +174,7 @@ class Bot(commands.Bot):
         for command in self.walk_commands():  # after on_load, since a feature can add a subcommand there
             # A word a typed command can't use is refused, so a typo can't change the wrong thing. A command that reads the leftover words itself says so with ignore_extra=True.
             command.ignore_extra = command.__original_kwargs__.get("ignore_extra", False)
+        self._take_pack_commands()  # after on_load, since that's where a feature adds its menus
         await self._finish_file_restore()
 
     async def _finish_file_restore(self) -> None:
@@ -221,6 +229,7 @@ class Bot(commands.Bot):
 
     async def on_guild_join(self, guild: Any) -> None:
         await self.timers.server_back(guild.id)
+        self.sync_server_soon(guild.id)
         await self._tell_who_added_the_bot(guild)
 
     async def _tell_who_added_the_bot(self, guild: Any) -> None:
@@ -230,7 +239,8 @@ class Bot(commands.Bot):
         try:
             async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.bot_add):
                 if entry.target is not None and entry.target.id == self.user.id and entry.user is not None:
-                    await entry.user.send(f"I'm in {discord.utils.escape_markdown(guild.name)} now. Run /dashboard there for a private link that signs you in, and the dashboard shows where to start.")
+                    where = f"Open {self.public_url} and sign in" if self.public_url else "Run /dashboard there"
+                    await entry.user.send(f"I'm in {discord.utils.escape_markdown(guild.name)} now. {where}, and the dashboard shows where to start.")
                     return
         except discord.HTTPException as error:
             log.info("Could not tell who added the bot to %s: %s", guild.id, error)
@@ -256,6 +266,8 @@ class Bot(commands.Bot):
             if connect == self._connects:  # a newer connection has its own ready coming, and its lists aren't in yet
                 self.members_settled.set()
                 self.timers.resume()
+                for guild in self.guilds:
+                    self.sync_server_soon(guild.id)
 
     async def on_resumed(self) -> None:
         """A member list request sent on a connection that died gets no answer after a resume, and discord.py keeps it until the next READY, sending no other for that server. So it goes, and a new one goes out."""
@@ -287,6 +299,57 @@ class Bot(commands.Bot):
         await self.tree.sync()
         await self.db.run("INSERT INTO kv (key, value) VALUES ('commands_digest', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", (digest,))
         log.info("Registered %d commands with Discord", len(payload))
+
+    # ---- command packs ----
+
+    def _take_pack_commands(self) -> None:
+        """A command pack's slash commands and menus leave the list every server shares, to go into each server that switches the pack on."""
+        packs = {type(module).__module__: module for module in self.modules if module.command_pack}
+
+        async def switched(guild_id: int, _settings: dict) -> None:
+            self.sync_server_soon(guild_id)
+
+        for module in packs.values():
+            self.pack_commands[module.key] = []
+            self.settings.listen(module.key, switched)
+        for kind in (discord.AppCommandType.chat_input, discord.AppCommandType.message, discord.AppCommandType.user):
+            for command in self.tree.get_commands(type=kind):
+                module = packs.get(command.module or "")
+                if module is not None:
+                    self.tree.remove_command(command.name, type=kind)
+                    self.pack_commands[module.key].append(command)
+
+    def sync_server_soon(self, guild_id: int) -> None:
+        """Put a server's pack commands in step with which packs it has on. Before the bot is connected there's nothing to tell Discord, and the ready that comes next does it."""
+        if not self.pack_commands or not self.is_ready():
+            return
+        asyncio.ensure_future(self._sync_server_logged(guild_id))
+
+    async def _sync_server_logged(self, guild_id: int) -> None:
+        try:
+            await self.sync_server_commands(guild_id)
+        except Exception:
+            log.exception("Couldn't register the command packs in %s. The next start or settings save tries again.", guild_id)
+
+    async def sync_server_commands(self, guild_id: int) -> bool:
+        """Registers the slash commands and menus of the packs a server has on, and only when they changed, since Discord limits how often that can happen. Returns whether it told Discord."""
+        async with self._pack_locks.setdefault(guild_id, asyncio.Lock()):
+            place = discord.Object(guild_id)
+            self.tree.clear_commands(guild=place)
+            for module in self.modules:
+                if module.command_pack and module.on_in(guild_id):
+                    for command in self.pack_commands.get(module.key, []):
+                        self.tree.add_command(command, guild=place, override=True)
+            payload = sorted((command.to_dict(self.tree) for kind in (discord.AppCommandType.chat_input, discord.AppCommandType.message, discord.AppCommandType.user)
+                              for command in self.tree.get_commands(guild=place, type=kind)), key=lambda data: (data.get("type", 1), data["name"]))
+            digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+            key = f"commands_digest:{guild_id}"
+            if await self.db.scalar("SELECT value FROM kv WHERE key = ?", (key,)) == digest:
+                return False
+            await self.tree.sync(guild=place)
+            await self.db.run("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, digest))
+            log.info("Registered %d pack commands in %s", len(payload), guild_id)
+            return True
 
     async def close(self) -> None:
         if self._timer_start is not None:
@@ -354,6 +417,9 @@ class Bot(commands.Bot):
     async def _check_command(self, ctx: Context) -> bool:
         if ctx.guild is None or ctx.command is None:
             return True
+        cog = getattr(ctx.command, "cog", None)
+        if isinstance(cog, Module) and not cog.on_in(ctx.guild.id):
+            raise commands.CheckFailure("That's switched off in this server. A manager can switch it on from the dashboard.")
         member = ctx.author if isinstance(ctx.author, discord.Member) else ctx.guild.get_member(ctx.author.id)
         if member is None:
             return False

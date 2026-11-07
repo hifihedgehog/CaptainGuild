@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "captainguild" / "web" / "static"
 
-ICONS = """activity triangle-alert arrow-down arrow-left arrow-right arrow-up at-sign ban chart-column bell bold book-open bot
+ICONS = """activity triangle-alert arrow-down arrow-down-to-line arrow-left arrow-right arrow-up arrow-up-to-line at-sign ban chart-column bell bold book-open bot
 cake calendar check circle-check chevron-down chevron-left chevron-right chevron-up circle-help clipboard clock code copy corner-down-right
 crown database door-open download external-link eye eye-off file-text filter flag folder gamepad-2 gauge gavel gift git-merge
 grip-vertical hammer hand hash heart history house image inbox info italic key layers-3 lightbulb link list lock log-in log-out

@@ -27,6 +27,7 @@ export const NAV = [
   { title: 'Roles', items: [
     { key: 'reactionroles', name: 'Reaction roles', icon: 'smile' },
     { key: 'autoroles', name: 'Autoroles', icon: 'user-plus' },
+    { key: 'rolerules', name: 'Role rules', icon: 'git-merge' },
   ] },
   { title: 'Custom commands', items: [
     { key: 'tags', name: 'Tags', icon: 'tag' },
