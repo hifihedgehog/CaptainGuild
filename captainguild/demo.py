@@ -168,7 +168,7 @@ class DemoOps:
             "author_name": stored.get("author_name", "Captain Guild"), "author_bot": stored.get("author_bot", True), "mine": mine, "system": False,
             "created_at": stored["created_at"], "url": f"https://discord.com/channels/{GUILD}/{stored['channel_id']}/{message_id}",
             "payload": stored["payload"], "reactions": stored.get("reactions", []), "attachments": stored.get("attachments", []),
-            "controls": stored.get("controls", 0), "stickers": stored.get("stickers", 0),
+            "controls": stored.get("controls", 0), "stickers": stored.get("stickers", 0), "suppressed": stored.get("suppressed", False),
         }
 
     async def channel_messages(self, guild_id: int, channel_id: int, *, limit: int = 50, before: int | None = None) -> dict:
@@ -198,11 +198,19 @@ class DemoOps:
             raise MessageGone("That message doesn't exist.")
         return {"id": next(self.ids), "name": name[:100]}
 
-    async def repost_message(self, source_channel_id: int, source_message_id: int, channel_id: int, payload: dict) -> dict:
+    async def repost_message(self, source_channel_id: int, source_message_id: int, channel_id: int, payload: dict, *, suppress_embeds: bool = False) -> dict:
         if source_message_id not in self.messages:
             raise MessageGone("The original message no longer exists.")
         sent = await self.send_message(channel_id, payload, silent=True)
+        if suppress_embeds and sent["id"] in self.messages:
+            self.messages[sent["id"]]["suppressed"] = True
         return {**sent, "payload": payload, "skipped": []}
+
+    async def read_hidden_embeds(self, channel_id: int, message_id: int) -> list[dict]:
+        stored = self.messages.get(message_id)
+        if stored is None:
+            raise MessageGone("That message doesn't exist.")
+        return list(stored.get("hidden_embeds", []))
 
     async def send_dm(self, user_id: int, payload: dict) -> dict:
         return {"id": next(self.ids)}

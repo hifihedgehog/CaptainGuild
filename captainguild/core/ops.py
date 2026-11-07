@@ -140,7 +140,8 @@ class Ops(Protocol):
     def channel(self, guild_id: int, channel_id: int) -> dict | None: ...
     async def channel_messages(self, guild_id: int, channel_id: int, *, limit: int = 50, before: int | None = None) -> dict: ...
     async def send_message(self, channel_id: int, payload: dict, *, ping: bool = False, silent: bool = False, components: list[dict] | None = None, files: list[tuple[str, bytes]] | None = None) -> dict: ...
-    async def repost_message(self, source_channel_id: int, source_message_id: int, channel_id: int, payload: dict) -> dict: ...
+    async def repost_message(self, source_channel_id: int, source_message_id: int, channel_id: int, payload: dict, *, suppress_embeds: bool = False) -> dict: ...
+    async def read_hidden_embeds(self, channel_id: int, message_id: int) -> list[dict]: ...
     async def send_dm(self, user_id: int, payload: dict) -> dict: ...
     async def start_thread(self, channel_id: int, message_id: int, name: str) -> dict: ...
     async def create_channel(self, guild_id: int, name: str, *, read_only: bool = False, private: bool = False, viewer_roles: Iterable[int] = ()) -> dict: ...
@@ -431,8 +432,9 @@ class DiscordOps:
             raise SendUnknown("The connection to Discord dropped during the send, so it may or may not have gone out.") from error
         return {"id": sent.id, "channel_id": channel_id, "url": sent.jump_url}
 
-    async def repost_message(self, source_channel_id: int, source_message_id: int, channel_id: int, payload: dict) -> dict:
-        """Post a copy of a message as this bot, pinging nobody. Its files are uploaded again, because links to them stop working once the original is deleted."""
+    async def repost_message(self, source_channel_id: int, source_message_id: int, channel_id: int, payload: dict, *, suppress_embeds: bool = False) -> dict:
+        """Post a copy of a message as this bot, pinging nobody. Its files are uploaded again, because links to them stop working once the original is deleted.
+        suppress_embeds posts it with its embeds hidden, as the original had them."""
         source = self._messageable(source_channel_id)
         channel = self._messageable(channel_id)
         limit = upload_limit(getattr(channel, "guild", None))
@@ -455,6 +457,8 @@ class DiscordOps:
             kwargs = messages.send_kwargs(_point_at_uploads(payload, uploads), allowed_mentions=discord.AllowedMentions.none())
             if files:
                 kwargs["files"] = files
+            if suppress_embeds:
+                kwargs["suppress_embeds"] = True
             sent = await channel.send(**kwargs)
         except discord.NotFound as error:
             raise MessageGone("The original message no longer exists.") from error
@@ -463,6 +467,27 @@ class DiscordOps:
         except discord.HTTPException as error:
             raise OpsError(f"Discord refused the message: {error.text or error.status}") from error
         return {"id": sent.id, "channel_id": channel_id, "url": sent.jump_url, "payload": messages.from_message(sent), "skipped": skipped}
+
+    async def read_hidden_embeds(self, channel_id: int, message_id: int) -> list[dict]:
+        """The embeds of a message whose embeds are hidden. Discord returns none while they're hidden, so they're shown for a moment and hidden
+        again. On another's message that takes Manage Messages."""
+        channel = self._messageable(channel_id)
+        try:
+            message = await channel.fetch_message(message_id)
+            shown = await message.edit(suppress=False)
+        except discord.NotFound as error:
+            raise MessageGone("That message doesn't exist.") from error
+        except discord.Forbidden as error:
+            raise OpsError("The bot can't show that message's hidden embed to copy it. It needs Manage Messages in that channel.") from error
+        except discord.HTTPException as error:
+            raise OpsError(f"Discord refused to show that message's hidden embed: {error.text or error.status}") from error
+        try:
+            return messages.from_message(shown)["embeds"]
+        finally:
+            try:
+                await shown.edit(suppress=True)
+            except discord.HTTPException as error:
+                raise OpsError(f"The message's hidden embed is showing, and hiding it again failed: {error.text or error.status}") from error
 
     async def start_thread(self, channel_id: int, message_id: int, name: str) -> dict:
         """A public thread on a message."""
@@ -616,6 +641,7 @@ class DiscordOps:
             "attachments": [{"filename": a.filename, "url": a.url, "size": a.size, "content_type": a.content_type} for a in message.attachments],
             "controls": controls,
             "stickers": len(getattr(message, "stickers", None) or []),
+            "suppressed": bool(message.flags.suppress_embeds),
         }
 
     async def add_reaction(self, channel_id: int, message_id: int, emoji: str) -> None:

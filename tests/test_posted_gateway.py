@@ -273,6 +273,35 @@ class EmbedTest(PostedCase):
         self.assertNotIn(int(second["id"]), self.net.messages)
         self.assert_no_errors()
 
+    async def test_a_post_whose_embed_is_hidden_comes_over_hidden(self):
+        # A long role list runs on into a message whose embed is hidden, so Discord shows only its reactions and returns no embed.
+        client = await self.client()
+        hidden = self.other_bot_post(content="", embeds=[{"type": "rich", "title": "Printers, continued", "description": "Three more"}], flags=4)
+        listing = await (await client.get(self.path(f"/embeds/channel-messages?channel_id={self.text['id']}"))).json()
+        self.assertEqual([row["payload"]["embeds"] for row in listing["messages"] if row["id"] == hidden["id"]], [[]])
+        response = await client.post(self.path("/embeds/adoptions"), json={"messages": [{"channel_id": self.text["id"], "message_id": hidden["id"]}], "delete_originals": True})
+        self.assertEqual(response.status, 200)
+        await self.cog_of(Embeds).finish_jobs()
+        job = await (await client.get(self.path(f"/embeds/adoptions/{(await response.json())['id']}"))).json()
+        self.assertEqual([(item["state"], item["note"], item["summary"]) for item in job["items"]], [("done", None, "Printers, continued")])
+        self.assertEqual([call[2]["flags"] & 4 for call in self.calls("PATCH", "/channels/{channel_id}/messages/{message_id}")], [0, 4])
+        copy = self.calls("POST", "/channels/{channel_id}/messages")[-1][2]
+        self.assertEqual((copy["embeds"][0]["title"], copy["flags"] & 4), ("Printers, continued", 4))
+        self.assertNotIn(int(hidden["id"]), self.net.messages)
+        kept = await (await client.get(self.path("/embeds/messages"))).json()
+        self.assertIn("Printers, continued", json.dumps(kept))
+        self.assert_no_errors()
+
+    async def test_a_hidden_post_left_in_place_is_hidden_again(self):
+        client = await self.client()
+        hidden = self.other_bot_post(content="", embeds=[{"type": "rich", "title": "Kept", "description": "Still here"}], flags=4)
+        response = await client.post(self.path("/embeds/adoptions"), json={"messages": [{"channel_id": self.text["id"], "message_id": hidden["id"]}]})
+        self.assertEqual(response.status, 200)
+        await self.cog_of(Embeds).finish_jobs()
+        self.assertEqual(self.net.messages[int(hidden["id"])]["flags"] & 4, 4)
+        self.assertEqual(self.calls("POST", "/channels/{channel_id}/messages")[-1][2]["embeds"][0]["title"], "Kept")
+        self.assert_no_errors()
+
     @staticmethod
     async def _fake_cdn(url: str) -> bytes:
         return b"image bytes"

@@ -232,6 +232,7 @@ class FakeMessage:
         self.pinned = False
         self.webhook_id = None
         self.type = discord.MessageType.default
+        self.flags = discord.MessageFlags._from_value(kwargs.get("flags", 0))  # a real Message always has these
         self.reference = None
         self.kwargs = kwargs
         self.jump_url = f"https://discord.com/channels/{self.guild.id if self.guild else '@me'}/{channel.id if channel else 0}/{self.id}"

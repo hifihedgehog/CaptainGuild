@@ -939,6 +939,10 @@ class Embeds(Module):
     async def _repost_item(self, job: dict, item: dict) -> None:
         ops = self.bot.ops
         source = await ops.fetch_message(item["source_channel_id"], item["source_message_id"])
+        hidden = bool(source.get("suppressed"))
+        if hidden and not source["mine"] and not source["system"] and not messages.has_content(source["payload"]) and not source["attachments"]:
+            # Discord returns no embed while it's hidden. A long reaction role list runs on into such a message, which shows only its reactions.
+            source = {**source, "payload": {**source["payload"], "embeds": await ops.read_hidden_embeds(item["source_channel_id"], item["source_message_id"])}}
         await self.db.run("UPDATE adopt_items SET author_name = ?, summary = ? WHERE id = ?", (source["author_name"], _describe(source), item["id"]))
         if source["mine"] or source["system"] or (not messages.has_content(source["payload"]) and not source["attachments"]):
             reason = "The bot already wrote this message." if source["mine"] else "This message has nothing the bot can post."
@@ -947,7 +951,7 @@ class Embeds(Module):
         target_id = job["target_channel_id"] or item["source_channel_id"]
         await self.db.run("UPDATE adopt_items SET state = 'posting' WHERE id = ?", (item["id"],))
         try:
-            sent = await ops.repost_message(item["source_channel_id"], item["source_message_id"], target_id, source["payload"])
+            sent = await ops.repost_message(item["source_channel_id"], item["source_message_id"], target_id, source["payload"], suppress_embeds=hidden)
         except OpsError:
             await self.db.run("UPDATE adopt_items SET state = 'waiting' WHERE id = ?", (item["id"],))
             raise
@@ -963,8 +967,9 @@ class Embeds(Module):
             "UPDATE adopt_items SET state = 'posted', new_channel_id = ?, new_message_id = ?, note = ? WHERE id = ?",
             (target_id, sent["id"], " ".join(notes) or None, item["id"]),
         )
+        # A copy posted hidden comes back from Discord with no embed, so what's kept is what was sent.
         await self.record_post(
-            job["guild_id"], target_id, sent["id"], sent["payload"], actor=_as_actor(job["created_by"], job["created_by_name"]), source="adopted",
+            job["guild_id"], target_id, sent["id"], source["payload"] if hidden else sent["payload"], actor=_as_actor(job["created_by"], job["created_by_name"]), source="adopted",
             note=f"Copied from {source['author_name']}'s post", adopted_from=source["author_name"], source_message_id=item["source_message_id"],
         )
 

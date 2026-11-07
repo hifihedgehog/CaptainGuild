@@ -485,11 +485,11 @@ class AdoptingTest(EmbedsCase):
         real = self.bot.ops.repost_message
         calls = []
 
-        async def flaky(source_channel_id, source_message_id, channel_id, payload):
+        async def flaky(source_channel_id, source_message_id, channel_id, payload, *, suppress_embeds=False):
             calls.append(source_message_id)
             if source_message_id == two.id and calls.count(two.id) == 1:
                 raise OpsError("Discord said no.")
-            return await real(source_channel_id, source_message_id, channel_id, payload)
+            return await real(source_channel_id, source_message_id, channel_id, payload, suppress_embeds=suppress_embeds)
 
         self.bot.ops.repost_message = flaky
         response = await self.adopt(client, [one, two, three])

@@ -130,6 +130,13 @@ class Network:
         self.posted.append(message)
         return message
 
+    @staticmethod
+    def _seen(message: dict) -> dict:
+        """A message as Discord returns it: its embeds don't appear while SUPPRESS_EMBEDS (4) is on, and come back once it's off."""
+        if message.get("flags", 0) & 4 and message.get("embeds"):
+            return {**message, "embeds": []}
+        return message
+
     def _missing(self, what: str) -> discord.NotFound:
         return discord.NotFound(FakeHTTPResponse(404), {"code": 10008, "message": what})
 
@@ -141,7 +148,7 @@ class Network:
             found = [m for m in found if int(m["id"]) < int(query["before"])]
         if query.get("after"):
             found = [m for m in found if int(m["id"]) > int(query["after"])]
-        return found[:int(query.get("limit") or 50)]
+        return [self._seen(m) for m in found[:int(query.get("limit") or 50)]]
 
     async def cdn(self, url: str, **kwargs: Any) -> bytes:
         return b"file from " + url.encode()
@@ -166,15 +173,15 @@ class Network:
             message = self.message_json(channel_id, body)
             for file in files or []:
                 message["attachments"].append({"id": str(new_id()), "filename": file.filename, "size": 1, "url": f"https://cdn.example/{file.filename}", "proxy_url": f"https://cdn.example/{file.filename}"})
-            return self._store(message)
+            return self._seen(self._store(message))
         if key == "PATCH /channels/{channel_id}/messages/{message_id}":
             existing = self.messages.get(message_id) or self.message_json(channel_id, {}, message_id=message_id)
             existing.update({k: v for k, v in body.items() if k in ("content", "embeds", "components", "flags")})
             existing["edited_timestamp"] = iso()
-            return self._store(existing)
+            return self._seen(self._store(existing))
         if key == "GET /channels/{channel_id}/messages/{message_id}":
             if message_id in self.messages:
-                return self.messages[message_id]
+                return self._seen(self.messages[message_id])
             raise self._missing("Unknown Message")
         if key == "GET /channels/{channel_id}/messages":
             return self._history(channel_id, kwargs.get("params") or {})
