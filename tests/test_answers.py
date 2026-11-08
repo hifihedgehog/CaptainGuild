@@ -3,6 +3,7 @@ and the refunds, the word screen, automatic answers to new forum posts, the two 
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import os
 import subprocess
@@ -150,7 +151,7 @@ class HowDoITest(AnswersCase):
         self.assertEqual(card["fields"], [{"name": "Sources", "value": f"[1] [Replacing the Nozzle]({BASE}/en/nozzle)", "inline": False}])
         self.assertEqual(card["footer"]["text"], "Answered from the Sample Wiki. Check the sources before you act on it.")
         first = self.model.requests[0]
-        self.assertEqual((first["model"], first["output_config"], first["max_tokens"]), ("claude-haiku-5-5", {"effort": "high"}, 16000))
+        self.assertEqual((first["model"], first["output_config"], first["max_tokens"], first["stream"]), ("claude-haiku-5-5", {"effort": "high"}, 64000, True))
         self.assertEqual(first["system"], prompts.fill(prompts.HOW_DO_I, WORDS) + "\n\n" + prompts.fill(prompts.RULES, WORDS))
         self.assertIn("Answer only from the Sample Wiki, which you reach", first["system"])
         self.assertEqual(first["messages"][0], {"role": "user", "content": QUESTION})
@@ -160,6 +161,17 @@ class HowDoITest(AnswersCase):
         [row] = await self.costs()
         self.assertEqual((row["command"], row["status"], row["model"], row["user_id"], row["rounds"]), ("how_do_i", "ok", "claude-haiku-5-5", self.member_id, 2))
         self.assertAlmostEqual(row["cost"], (2000 * 0.10 + 200 * 0.50) / 1_000_000)
+        self.assert_no_errors()
+
+    async def test_an_answer_near_the_end_of_the_reply_window_goes_to_the_channel_naming_the_person(self):
+        self.answered("Unscrew it. [S2]")
+        with mock.patch.object(pack, "LATE_REPLY_MARGIN", datetime.timedelta(minutes=16)):  # every reply counts as late
+            await self.slash("how_do_i", question=QUESTION)
+        method, path, body = next(call for call in reversed(self.net.calls) if call[0] == "POST" and call[1] == "/channels/{channel_id}/messages")
+        self.assertEqual(body["content"], f"<@{self.member_id}>")
+        self.assertEqual((body["allowed_mentions"]["parse"], [int(user) for user in body["allowed_mentions"]["users"]]), ([], [self.member_id]), "only the person is pinged")
+        self.assertEqual(body["embeds"][0]["title"], QUESTION)
+        self.assertEqual(int(self.last()["channel_id"]), int(self.text["id"]))
         self.assert_no_errors()
 
     async def test_a_typed_question_gets_the_same_card(self):
@@ -278,7 +290,7 @@ class OtherCommandsTest(AnswersCase):
         with mock.patch.object(modelmaker, "available", lambda: True), mock.patch.object(modelmaker, "run_held", OpenScad()):
             await self.slash("make_model", description="A clip that holds the end of a filament spool")
         first = self.model.requests[0]
-        self.assertEqual((first["model"], first["output_config"]["effort"], first["max_tokens"]), ("claude-sonnet-5-5", "medium", 20000))
+        self.assertEqual((first["model"], first["output_config"]["effort"], first["max_tokens"]), ("claude-sonnet-5-5", "medium", 64000))
         self.assertEqual(first["system"], prompts.fill(prompts.MAKE_MODEL, WORDS) + "\n\n" + prompts.fill(prompts.RULES, WORDS))
         self.assertEqual([tool["name"] for tool in first["tools"]], ["search_wiki", "read_wiki_page", "render_model"])
         self.assertIn("Rendered. Size 40.0 x 20.0 x 5.5 mm", self.model.tool_results(1)[0]["content"])

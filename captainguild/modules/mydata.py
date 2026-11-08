@@ -30,7 +30,7 @@ class Section:
 
 SECTIONS = (
     Section("birthday", "Birthday", (("birthdays", "user_id"),), "greetings"),
-    Section("highlights", "Highlight words and blocks", (("highlight_words", "user_id"), ("highlight_blocks", "user_id")), "utilities"),
+    Section("highlights", "Highlight words, blocks and pauses", (("highlight_words", "user_id"), ("highlight_blocks", "user_id"), ("highlight_pauses", "user_id")), "utilities"),
     Section("reminders", "Reminders", (("reminders", "user_id"),), "utilities"),
     Section("levels", "XP, level and rank card background", (("level_members", "user_id"), ("level_backgrounds", "user_id"), ("level_events", "user_id")), "levels"),
     Section("giveaways", "Giveaway entries", (("giveaway_entries", "user_id"),), "utilities"),

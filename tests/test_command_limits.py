@@ -73,6 +73,30 @@ class CommandLimitsTest(BotTest):
                 self.check(data, data["name"])
                 self.assertLessEqual(characters(data), COMMAND_CHARACTERS, f"{data['name']}: too many characters in total")
 
+    async def test_no_description_is_cut_to_fit(self):
+        """The library cuts an option's description to 100 characters as it builds the command (discord.utils._shorten), so the limit
+        above never sees one that's too long, and it ends mid-sentence in Discord's command list. The text as written stays on the
+        command's function."""
+        long: list[str] = []
+
+        def walk(command: app_commands.Command | app_commands.Group, path: str) -> None:
+            if len(command.description) > 100:
+                long.append(f"{path}: {len(command.description)} characters")
+            if isinstance(command, app_commands.Group):
+                for child in command.commands:
+                    walk(child, f"{path} {child.name}")
+                return
+            written = getattr(command.callback, "__discord_app_commands_param_description__", None) or {}
+            for name, text in written.items():
+                if isinstance(text, str) and len(" ".join(text.split())) > 100:
+                    long.append(f"{path} {name}: {len(text)} characters")
+
+        packs = [command for commands in self.bot.pack_commands.values() for command in commands]
+        for command in [*self.bot.tree.get_commands(), *packs]:
+            if isinstance(command, (app_commands.Command, app_commands.Group)):
+                walk(command, command.name)
+        self.assertEqual(long, [])
+
     async def test_prefix_and_slash_names_agree_and_nothing_collides(self):
         names = [c.qualified_name for c in self.bot.commands]
         self.assertEqual(len(names), len(set(names)))

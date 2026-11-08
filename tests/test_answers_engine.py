@@ -2,6 +2,7 @@
 service's errors, what it cost, and sketches."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import subprocess
 import sys
@@ -114,6 +115,42 @@ class RoundsTest(LoopCase):
         self.assertEqual((await self.ask()).status, "too_long")
         self.model.reply(self.model.text("Enough words to send.", stop_reason="max_tokens"))
         self.assertEqual((await self.ask()).status, "ok")
+
+    async def test_every_round_streams_with_room_for_thinking_at_max_effort(self):
+        self.model.reply(self.model.tool("search_wiki", {"query": "nozzle"}), self.model.text("Unscrew it. [S2]"))
+        answer = await self.ask(effort="max")
+        self.assertEqual(answer.status, "ok")
+        self.assertEqual([request.get("stream") for request in self.model.requests], [True, True])
+        self.assertEqual({request["max_tokens"] for request in self.model.requests}, {64000})
+        self.assertGreater(engine.MAX_TOKENS, 20000, "Opus 5.5 at Max effort thought past 20,000 tokens on a plain request")
+
+    async def test_reads_wait_out_a_long_silent_thought(self):
+        timeout = engine.client_timeout()
+        self.assertEqual((timeout.read, timeout.connect), (1200.0, 10.0))
+        self.assertGreater(timeout.read, engine.MAX_TOKENS / 90, "the thinking isn't shown, so the stream can stay quiet while all of it is written")
+
+    async def test_an_error_partway_through_a_stream_reads_as_the_service_down(self):
+        self.model.reply(self.model.broken("overloaded_error", "Overloaded"))
+        with self.assertLogs(engine.log, level="WARNING"):
+            self.assertEqual((await self.ask()).status, "unavailable")
+        self.model.reply(self.model.broken("invalid_request_error", "Bad"))
+        with self.assertLogs(engine.log, level="WARNING"):
+            self.assertEqual((await self.ask()).status, "error")
+
+    async def test_a_request_past_the_time_limit_stops(self):
+        async def slow(client, **request):
+            await asyncio.sleep(5)
+
+        with mock.patch.object(engine, "ANSWER_SECONDS", 0.05), mock.patch.object(engine, "final_message", slow), self.assertLogs(engine.log, level="WARNING"):
+            answer = await self.ask()
+        self.assertEqual(answer.status, "too_slow")
+
+    async def test_a_round_that_starts_late_has_to_answer(self):
+        self.model.reply(self.model.text("Unscrew it. [S2]"))
+        with mock.patch.object(engine, "LAST_ROUND_AFTER", 0):
+            answer = await self.ask()
+        self.assertEqual(self.model.requests[0]["tool_choice"], {"type": "none"})
+        self.assertEqual(answer.status, "ok")
 
 
     async def test_with_two_sources_each_passage_names_its_own(self):

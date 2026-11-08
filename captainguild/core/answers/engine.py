@@ -15,6 +15,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 import traceback
 from collections import Counter
 from dataclasses import dataclass, field
@@ -28,9 +29,14 @@ from .wiki import PAGE_CHAR_LIMIT, Library, Section
 
 log = logging.getLogger(__name__)
 
-MAX_TOKENS = 16000  # thinking counts toward this, and the reply itself stays short
-CLIENT_SECONDS = 300.0  # a model request can spend a few minutes writing OpenSCAD and thinking
+MAX_TOKENS = 64000  # thinking counts toward this, and at Max effort it can pass 20,000 tokens before the reply starts
+# Every round streams, so no answer waits on one long HTTP read. The thinking isn't shown, so the stream can go quiet for as long as the
+# model thinks, which at 64,000 tokens and about 90 a second passes ten minutes. A read waits that out.
+READ_SECONDS = 1200.0
+CONNECT_SECONDS = 10.0
 CLIENT_RETRIES = 2
+ANSWER_SECONDS = 25 * 60  # the most one request takes, every round together
+LAST_ROUND_AFTER = 10 * 60  # a round that starts later than this has to answer from what it has
 # Bounds on one answer. A reply can ask for any number of tools at once, and every page read goes back in as input on each later
 # round, so without these one request's cost and time have no limit short of the context window.
 MAX_TOOL_CALLS = 40  # comparison questions have used 35 searches
@@ -265,6 +271,16 @@ def web_tags(text: str, pages: dict, sources: Sources) -> str:
     return _WEB_TAG.sub(replace, text)
 
 
+async def final_message(client: Any, **request: Any) -> Any:
+    """One round, streamed, and handed back whole, as the call that doesn't stream would give it."""
+    async with client.messages.stream(**request) as stream:
+        return await stream.get_final_message()
+
+
+def client_timeout() -> anthropic.Timeout:
+    return anthropic.Timeout(READ_SECONDS, connect=CONNECT_SECONDS)
+
+
 def is_word(text: str, word: str, max_len: int) -> bool:
     """Whether the reply is just this control word, give or take a few words."""
     stripped = text.strip().strip(".").upper()
@@ -288,83 +304,89 @@ async def converse(client: Any, library: Library, question: str, *, system: str,
     messages: list[dict] = [{"role": "user", "content": question}]
     reply_blocks: list = []  # the text blocks of the final reply, which a paused turn can split
     web_pages: dict[str, tuple[str, str]] = {}  # normalized address -> (address, title) from web search results
+    started = time.monotonic()
     try:
-        for round_number in range(1, max_rounds + 1):
-            last_round = round_number == max_rounds
-            response = await client.messages.create(
-                model=model,
-                max_tokens=max_tokens,
-                system=system,
-                tools=tools,
-                # On the last round the model has to answer from what it has already read.
-                tool_choice={"type": "none"} if last_round else {"type": "auto"},
-                messages=messages,
-                output_config={"effort": effort},
-                cache_control={"type": "ephemeral"},
-            )
-            answer.rounds = round_number
-            used = {key: getattr(response.usage, key, 0) or 0 for key in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")}
-            answer.usage.update(used)
-            answer.billed += token_cost(model, used)
-            server_tools = getattr(response.usage, "server_tool_use", None)
-            if server_tools is not None:
-                answer.usage["web_search_requests"] += getattr(server_tools, "web_search_requests", 0) or 0
-            collect_web_pages(response.content, web_pages)
+        async with asyncio.timeout(ANSWER_SECONDS):
+            for round_number in range(1, max_rounds + 1):
+                last_round = round_number == max_rounds or time.monotonic() - started >= LAST_ROUND_AFTER
+                response = await final_message(
+                    client,
+                    model=model,
+                    max_tokens=max_tokens,
+                    system=system,
+                    tools=tools,
+                    # On the last round the model has to answer from what it has already read.
+                    tool_choice={"type": "none"} if last_round else {"type": "auto"},
+                    messages=messages,
+                    output_config={"effort": effort},
+                    cache_control={"type": "ephemeral"},
+                )
+                answer.rounds = round_number
+                used = {key: getattr(response.usage, key, 0) or 0 for key in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")}
+                answer.usage.update(used)
+                answer.billed += token_cost(model, used)
+                server_tools = getattr(response.usage, "server_tool_use", None)
+                if server_tools is not None:
+                    answer.usage["web_search_requests"] += getattr(server_tools, "web_search_requests", 0) or 0
+                collect_web_pages(response.content, web_pages)
 
-            if response.stop_reason == "refusal":
-                answer.status = "refused"
-                return answer
-            # Thinking counts toward max_tokens. A reply cut off there has no text, or ends in an unfinished tool call, so there's nothing to send.
-            if response.stop_reason == "max_tokens" and (
-                    any(block.type == "tool_use" for block in response.content)
-                    or not any(block.type == "text" and block.text.strip() for block in response.content)):
-                answer.status = "too_long"
-                return answer
-            if response.stop_reason == "pause_turn" and not last_round:
-                # Web search reached its step limit on the service's side. Sending the turn back resumes it.
+                if response.stop_reason == "refusal":
+                    answer.status = "refused"
+                    return answer
+                # Thinking counts toward max_tokens. A reply cut off there has no text, or ends in an unfinished tool call, so there's nothing to send.
+                if response.stop_reason == "max_tokens" and (
+                        any(block.type == "tool_use" for block in response.content)
+                        or not any(block.type == "text" and block.text.strip() for block in response.content)):
+                    answer.status = "too_long"
+                    return answer
+                if response.stop_reason == "pause_turn" and not last_round:
+                    # Web search reached its step limit on the service's side. Sending the turn back resumes it.
+                    reply_blocks += [block for block in response.content if block.type == "text"]
+                    messages.append({"role": "assistant", "content": response.content})
+                    continue
+                tool_uses = [block for block in response.content if block.type == "tool_use"]
+                if response.stop_reason == "tool_use" and tool_uses and not last_round:
+                    reply_blocks = []  # text before a tool call is working notes, not the reply
+                    messages.append({"role": "assistant", "content": response.content})
+                    results = []
+                    for tool in tool_uses:
+                        answer.tool_calls += 1
+                        called[tool.name] += 1
+                        if answer.tool_calls > MAX_TOOL_CALLS:
+                            content, is_error = TOO_MANY_CALLS, True
+                        elif called[tool.name] > tool_limits.get(tool.name, MAX_TOOL_CALLS):
+                            content, is_error = CALLS_USED.format(tool=tool.name), True
+                        elif tool.name in handlers:
+                            content, is_error = await handlers[tool.name](tool.input, answer)
+                        else:
+                            content, is_error = run_wiki_tool(tool.name, tool.input, sources, library)
+                        result: dict[str, Any] = {"type": "tool_result", "tool_use_id": tool.id, "content": content}
+                        if is_error:
+                            result["is_error"] = True
+                        results.append(result)
+                    messages.append({"role": "user", "content": results})
+                    continue
+
                 reply_blocks += [block for block in response.content if block.type == "text"]
-                messages.append({"role": "assistant", "content": response.content})
-                continue
-            tool_uses = [block for block in response.content if block.type == "tool_use"]
-            if response.stop_reason == "tool_use" and tool_uses and not last_round:
-                reply_blocks = []  # text before a tool call is working notes, not the reply
-                messages.append({"role": "assistant", "content": response.content})
-                results = []
-                for tool in tool_uses:
-                    answer.tool_calls += 1
-                    called[tool.name] += 1
-                    if answer.tool_calls > MAX_TOOL_CALLS:
-                        content, is_error = TOO_MANY_CALLS, True
-                    elif called[tool.name] > tool_limits.get(tool.name, MAX_TOOL_CALLS):
-                        content, is_error = CALLS_USED.format(tool=tool.name), True
-                    elif tool.name in handlers:
-                        content, is_error = await handlers[tool.name](tool.input, answer)
-                    else:
-                        content, is_error = run_wiki_tool(tool.name, tool.input, sources, library)
-                    result: dict[str, Any] = {"type": "tool_result", "tool_use_id": tool.id, "content": content}
-                    if is_error:
-                        result["is_error"] = True
-                    results.append(result)
-                messages.append({"role": "user", "content": results})
-                continue
-
-            reply_blocks += [block for block in response.content if block.type == "text"]
-            text = web_tags(cited_text(reply_blocks, sources), web_pages, sources)
-            if auto and is_word(text, SKIP_WORD, 200):
-                answer.status = "skipped"
+                text = web_tags(cited_text(reply_blocks, sources), web_pages, sources)
+                if auto and is_word(text, SKIP_WORD, 200):
+                    answer.status = "skipped"
+                    return answer
+                if is_word(text, DECLINE_WORD, 20):
+                    answer.status = "skipped" if auto else "declined"
+                    return answer
+                if redirect and is_word(text, REDIRECT_WORD, 20):
+                    answer.status = "skipped" if auto else "redirect"
+                    return answer
+                render(text, sources, answer)
+                if not answer.text:
+                    answer.status = "error"
                 return answer
-            if is_word(text, DECLINE_WORD, 20):
-                answer.status = "skipped" if auto else "declined"
-                return answer
-            if redirect and is_word(text, REDIRECT_WORD, 20):
-                answer.status = "skipped" if auto else "redirect"
-                return answer
-            render(text, sources, answer)
-            if not answer.text:
-                answer.status = "error"
+            answer.status = "error"
             return answer
-        answer.status = "error"
-        return answer
+    except TimeoutError:
+        log.warning("An answer ran past %d minutes after %d rounds", ANSWER_SECONDS // 60, answer.rounds)
+        answer.status = "too_slow"
     except anthropic.RateLimitError:
         answer.status = "busy"
     except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as error:
@@ -372,9 +394,11 @@ async def converse(client: Any, library: Library, question: str, *, system: str,
         answer.status = "key_refused"
     except anthropic.APIStatusError as error:
         log.warning("The AI service answered %s: %s", error.status_code, error.message)
-        # An account out of prepaid credit answers 400 "Your credit balance is too low".
+        # An account out of prepaid credit answers 400 "Your credit balance is too low". An error sent partway through a stream comes
+        # on a response that began as 200, so its kind is read from the body.
         out_of_credit = "credit balance" in str(error.message).lower()
-        answer.status = "unavailable" if error.status_code >= 500 or out_of_credit else "error"
+        kind = (error.body.get("error") or {}).get("type") if isinstance(error.body, dict) and isinstance(error.body.get("error"), dict) else None
+        answer.status = "unavailable" if error.status_code >= 500 or out_of_credit or kind in ("overloaded_error", "api_error") else "error"
     except anthropic.APIConnectionError as error:
         log.warning("The AI service couldn't be reached: %s", error)
         answer.status = "unavailable"

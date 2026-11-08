@@ -30,7 +30,7 @@ import re
 import time
 import types
 from collections import OrderedDict, deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 import anthropic
@@ -85,11 +85,14 @@ DAILY = "You've used today's {limit} requests. /ask, /how_do_i, /brainstorm, and
 REDIRECT = "That one fits {ask} better. It can search the web for prices, other brands, and anything the wiki doesn't cover."
 NOT_COUNTED = "It didn't count toward your daily limit."
 UPDATE_RUNNING = "A wiki update is already running."
+LATE_REPLY_MARGIN = timedelta(seconds=30)  # time to upload an answer's files before Discord stops taking the command's reply
+
 STATUS_TEXT = {
     "refused": "The model's safety filter declined that question. Try rewording it.",
     "declined": RULES_NOTICE,
     "blocked_reply": RULES_NOTICE,
     "too_long": "That was too much to finish in one answer. Ask for one part or one question at a time.",
+    "too_slow": "That took too long to finish. Try a simpler request.",
     "busy": "Too many questions at once right now. Try again in a minute.",
     "unavailable": "The answer service isn't responding. Try again in a few minutes.",
     "key_refused": "The AI service refused the bot's API key, so the bot's host has to replace it.",
@@ -453,7 +456,7 @@ class Answers(Module):
 
     def _client(self) -> Any:
         if self.client is None:
-            self.client = anthropic.AsyncAnthropic(api_key=self.api_key(), max_retries=engine.CLIENT_RETRIES, timeout=engine.CLIENT_SECONDS)
+            self.client = anthropic.AsyncAnthropic(api_key=self.api_key(), max_retries=engine.CLIENT_RETRIES, timeout=engine.client_timeout())
         return self.client
 
     def library(self, settings: dict) -> Library:
@@ -724,20 +727,30 @@ class Answers(Module):
             if result.status == "ok":
                 result, title = await self.screened(guild, result, question)
         await self.record(guild.id, ctx.author.id, command, result, time.monotonic() - started, where=f"user={ctx.author.id}")
-        quiet = discord.AllowedMentions.none()
         if result.status == "redirect":
             refunded = await self.refund_redirect(guild.id, ctx.author.id, day)
             words = REDIRECT.format(ask=await self._mention(guild, "ask"))
-            await ctx.send(f"{words} {NOT_COUNTED}" if refunded else words, allowed_mentions=quiet)
+            await self.send_back(ctx, f"{words} {NOT_COUNTED}" if refunded else words)
             return
         if result.status != "ok":
             # Only a request nothing was billed for gives its slot back. One that ran to the token cap or failed after a billed round counts.
             refunded = result.cost == 0 and await self.refund(guild.id, ctx.author.id, day)
             words = STATUS_TEXT.get(result.status, STATUS_TEXT["error"])
-            await ctx.send(f"{words} {NOT_COUNTED}" if refunded else words, allowed_mentions=quiet)
+            await self.send_back(ctx, f"{words} {NOT_COUNTED}" if refunded else words)
             return
         footer = self.footer(settings["footers"][command], result, library, settings)
-        await ctx.send(embed=answer_card(title, result, footer), files=answer_files(result), allowed_mentions=quiet)
+        await self.send_back(ctx, None, embed=answer_card(title, result, footer), files=answer_files(result))
+
+    @staticmethod
+    async def send_back(ctx: commands.Context, content: str | None, **parts: Any) -> None:
+        """The reply to a request. Discord takes a slash command's reply for 15 minutes, and a long answer can outlast that. Near the end
+        the reply goes to the channel and names the person, since the command itself only shows that it didn't respond, and a reply sent
+        in the last seconds can fail partway through its upload."""
+        interaction = ctx.interaction
+        if interaction is None or discord.utils.utcnow() < interaction.expires_at - LATE_REPLY_MARGIN:
+            await ctx.send(content, allowed_mentions=discord.AllowedMentions.none(), **parts)
+            return
+        await ctx.channel.send(f"{ctx.author.mention} {content or ''}".strip(), allowed_mentions=discord.AllowedMentions(users=[ctx.author]), **parts)
 
     async def _mention(self, guild: Any, name: str) -> str:
         """A command as a link people can click, once its ID is known."""

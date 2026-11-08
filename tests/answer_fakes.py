@@ -6,7 +6,9 @@
     cog.client = model.client()
 
 Each request takes the next reply in order and is kept, as the JSON the SDK sent, in `model.requests`. A reply can be a message, an
-HTTP error from `model.error(...)`, or an exception to raise as a failed connection.
+HTTP error from `model.error(...)`, an error partway through a stream from `model.broken(...)`, or an exception to raise as a failed
+connection. A request that asks to stream gets the message as the service streams one: message_start, each block opened, filled by its
+deltas and closed, then message_delta with the stop reason and the usage totals, and message_stop.
 """
 from __future__ import annotations
 
@@ -40,8 +42,14 @@ class ScriptedModel:
         if isinstance(reply, Exception):
             raise reply
         status, data = reply
+        if status == "broken":
+            opening = self.message([], "end_turn", input_tokens=0, output_tokens=0)
+            return httpx2.Response(200, headers=_EVENTS, content=(_event("message_start", {"type": "message_start", "message": {**opening, "model": body["model"], "stop_reason": None}})
+                                                                  + _event("error", data)).encode())
         if status == 200:
             data = {**data, "model": body["model"]}
+            if body.get("stream"):
+                return httpx2.Response(200, headers=_EVENTS, content=_streamed(data).encode())
         return httpx2.Response(status, json=data)
 
     def reply(self, *replies: Any) -> "ScriptedModel":
@@ -72,10 +80,49 @@ class ScriptedModel:
     def error(status: int, kind: str, words: str) -> tuple[int, dict]:
         return status, {"type": "error", "error": {"type": kind, "message": words}}
 
+    @staticmethod
+    def broken(kind: str, words: str) -> tuple[str, dict]:
+        """A stream that opens and then sends an error event, as the service does when it fails partway through an answer."""
+        return "broken", {"type": "error", "error": {"type": kind, "message": words}}
+
     def tool_results(self, request: int) -> list[dict]:
         """The tool results the bot sent with one request, by its number."""
         last = self.requests[request]["messages"][-1]
         return [part for part in last["content"] if isinstance(part, dict) and part.get("type") == "tool_result"] if isinstance(last["content"], list) else []
+
+
+_EVENTS = {"content-type": "text/event-stream"}
+
+
+def _event(kind: str, data: dict) -> str:
+    return f"event: {kind}\ndata: {json.dumps(data)}\n\n"
+
+
+def _streamed(message: dict) -> str:
+    """The message as the service streams it. Text and thinking arrive as deltas, and a tool's input as JSON in pieces, from blocks that
+    open empty. Other blocks, such as web search results, arrive whole when they open."""
+    usage = message["usage"]
+    events = [_event("message_start", {"type": "message_start", "message": {**message, "content": [], "stop_reason": None, "stop_sequence": None,
+                                                                             "usage": {**usage, "output_tokens": 1}}})]
+    for index, block in enumerate(message["content"]):
+        kind = block["type"]
+        if kind == "text":
+            opened, deltas = {**block, "text": ""}, [{"type": "text_delta", "text": block["text"]}]
+        elif kind == "thinking":
+            opened = {"type": "thinking", "thinking": "", "signature": ""}
+            deltas = [{"type": "thinking_delta", "thinking": block.get("thinking", "")}, {"type": "signature_delta", "signature": block.get("signature", "")}]
+        elif kind in ("tool_use", "server_tool_use"):
+            serialized = json.dumps(block.get("input") or {})
+            opened = {**block, "input": {}}
+            deltas = [{"type": "input_json_delta", "partial_json": serialized[:len(serialized) // 2]}, {"type": "input_json_delta", "partial_json": serialized[len(serialized) // 2:]}]
+        else:
+            opened, deltas = block, []
+        events.append(_event("content_block_start", {"type": "content_block_start", "index": index, "content_block": opened}))
+        events += [_event("content_block_delta", {"type": "content_block_delta", "index": index, "delta": delta}) for delta in deltas]
+        events.append(_event("content_block_stop", {"type": "content_block_stop", "index": index}))
+    events.append(_event("message_delta", {"type": "message_delta", "delta": {"stop_reason": message["stop_reason"], "stop_sequence": message.get("stop_sequence")}, "usage": usage}))
+    events.append(_event("message_stop", {"type": "message_stop"}))
+    return "".join(events)
 
 
 # A term-matching module of the shape core/answers/screening.py takes, matching plain words. Its character map reads 0 as o.

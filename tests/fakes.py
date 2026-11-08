@@ -468,6 +468,7 @@ class FakeContext:
         self.sent: list[dict] = []
         self.oks: list[str] = []
         self.fails: list[str] = []
+        self.reply_options: list[dict] = []  # what each ok or fail asked for besides its text, such as delete_after
         self.decision = None
         self.command = None
 
@@ -477,9 +478,11 @@ class FakeContext:
 
     async def ok(self, text: str, **kwargs: Any) -> None:
         self.oks.append(text)
+        self.reply_options.append(kwargs)
 
     async def fail(self, text: str, **kwargs: Any) -> None:
         self.fails.append(text)
+        self.reply_options.append(kwargs)
 
     async def defer(self, *, ephemeral: bool = False) -> None:
         pass

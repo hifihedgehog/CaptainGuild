@@ -28,6 +28,7 @@ from ..core.durations import Duration, humanize, ordinal, parse_duration
 from ..core.module import Module, requires
 from ..core.perms import MODULE as COMMANDS_MODULE
 from ..core.perms import Who, evaluate
+from ..core.shortcuts import expand_line
 from .games import INCURSION
 
 log = logging.getLogger(__name__)
@@ -244,18 +245,46 @@ def parse_when(text: str, now: datetime.datetime) -> tuple[datetime.datetime, st
 _LINK = re.compile(r"https?://\S+")
 _DISCORD_MARKUP = re.compile(r"<[^<>\s]+>")  # mentions, custom emoji and timestamps aren't words someone wrote
 _WORD = re.compile(r"[^\W_]+(?:['\u2019][^\W_]+)*")
+_APOSTROPHE = re.compile(r"['\u2019]")
 _VOWELS = "aeiou"
 MAX_HIGHLIGHT_WORDS = 100
 MAX_HIGHLIGHT_LENGTH = 100
-QUIET_SECONDS = 300
+HIGHLIGHT_PATIENCE = 10  # seconds a notice waits for the person to write, type or react in that channel, which shows they saw it
 HIGHLIGHT_COOLDOWN = 60
+MAX_PENDING_HIGHLIGHTS = 1000
+EARLIER_LINE_MAX = 300
+TRIGGER_LINE_MAX = 1500
+EMBED_TEXT_MAX = 4096
+WORDS_NAMED_MAX = 10
+
+
+def _fold(text: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)).casefold()
 
 
 def highlight_tokens(text: str) -> list[str]:
     """A message's words the way a search index sees them: no links, accents, case or punctuation."""
     cleaned = _DISCORD_MARKUP.sub(" ", _LINK.sub(" ", text or ""))
-    folded = "".join(c for c in unicodedata.normalize("NFKD", cleaned) if not unicodedata.combining(c)).casefold()
-    return [re.sub(r"['\u2019]", "", word) for word in _WORD.findall(folded)]
+    return [_APOSTROPHE.sub("", word) for word in _WORD.findall(_fold(cleaned))]
+
+
+def placed_tokens(text: str) -> list[tuple[str, int, int]]:
+    """The words highlight_tokens finds, each with the start and end of the stretch of the text it came from, so a notice can mark them.
+
+    Links and markup are blanked out to their full length rather than to one space, and each character is folded on its own, which
+    keeps every word lined up with the original text. Folding one character at a time gives the same letters as folding the whole text.
+    """
+    def blank(match: re.Match) -> str:
+        return " " * len(match.group())
+
+    cleaned = _DISCORD_MARKUP.sub(blank, _LINK.sub(blank, text or ""))
+    letters: list[str] = []
+    origins: list[int] = []
+    for position, char in enumerate(cleaned):
+        for letter in _fold(char):
+            letters.append(letter)
+            origins.append(position)
+    return [(_APOSTROPHE.sub("", match.group()), origins[match.start()], origins[match.end() - 1] + 1) for match in _WORD.finditer("".join(letters))]
 
 
 @functools.lru_cache(maxsize=65536)
@@ -315,6 +344,70 @@ def matching_words(tokens: list[str], index: dict[str, list[HighlightWord]]) -> 
                 if all(word_forms(tokens[position + step]) & entry.forms[step] for step in range(1, len(entry.forms))):
                     found.add(entry)
     return found
+
+
+def marked_spans(text: str, entries: Iterable[HighlightWord]) -> list[tuple[int, int]]:
+    """Every stretch of the text where one of these words appears, in order, with stretches that touch joined into one."""
+    placed = placed_tokens(text)
+    tokens = [token for token, _, _ in placed]
+    index = build_index(entries)
+    spans: list[tuple[int, int]] = []
+    for position, token in enumerate(tokens):
+        for form in word_forms(token):
+            for entry in index.get(form, ()):
+                last = position + len(entry.forms) - 1
+                if last < len(tokens) and all(word_forms(tokens[position + step]) & entry.forms[step] for step in range(1, len(entry.forms))):
+                    spans.append((placed[position][1], placed[last][2]))
+    joined: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if joined and start <= joined[-1][1]:
+            joined[-1] = (joined[-1][0], max(end, joined[-1][1]))
+        else:
+            joined.append((start, end))
+    return joined
+
+
+def marked_text(text: str, spans: list[tuple[int, int]], limit: int) -> str:
+    """The text with these stretches in bold. A text past the limit is cut to a window that starts a little before the first stretch."""
+    start = 0
+    if len(text) > limit:
+        first = spans[0][0] if spans else 0
+        start = max(0, min(first - limit // 4, len(text) - limit))
+    end = min(len(text), start + limit)
+    pieces = ["\N{HORIZONTAL ELLIPSIS}" if start else ""]
+    position = start
+    for span_start, span_end in spans:
+        span_start, span_end = max(span_start, position), min(span_end, end)
+        if span_start >= span_end:
+            continue
+        pieces += [text[position:span_start], "**", text[span_start:span_end], "**"]
+        position = span_end
+    pieces.append(text[position:end])
+    if end < len(text):
+        pieces.append("\N{HORIZONTAL ELLIPSIS}")
+    return "".join(pieces)
+
+
+def _places(channel: Any) -> set[int]:
+    """The channel, the channel a thread sits in, and the category over either one. A thread whose channel isn't cached leaves its category unknown."""
+    found = {channel.id}
+    if isinstance(channel, discord.Thread):
+        found.add(channel.parent_id)
+        holder = channel.parent
+    else:
+        holder = channel
+    category_id = getattr(holder, "category_id", None) if holder is not None else None
+    if category_id:
+        found.add(category_id)
+    return found
+
+
+def _named(words: list[str]) -> str:
+    """The words in bold, joined the way a sentence lists them, with the rest counted past WORDS_NAMED_MAX."""
+    shown = [f"**{discord.utils.escape_markdown(word)}**" for word in words[:WORDS_NAMED_MAX]]
+    if len(words) > WORDS_NAMED_MAX:
+        shown.append(f"{len(words) - WORDS_NAMED_MAX} more")
+    return shown[0] if len(shown) == 1 else ", ".join(shown[:-1]) + " and " + shown[-1]
 
 
 # ---- member dump ----
@@ -655,6 +748,15 @@ class Utilities(Module):
         ALTER TABLE giveaways ADD COLUMN required_role INTEGER;
         ALTER TABLE giveaways ADD COLUMN account_days INTEGER;
         """,
+        # Someone's pause on their highlight DMs in one server. No end time means until they resume.
+        """
+        CREATE TABLE highlight_pauses (
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            until REAL,
+            PRIMARY KEY (guild_id, user_id)
+        );
+        """,
     ]
 
     def __init__(self, bot: Any) -> None:
@@ -662,7 +764,8 @@ class Utilities(Module):
         self._words: dict[int, dict[int, list[HighlightWord]]] = {}
         self._indexes: dict[int, dict[str, list[HighlightWord]]] = {}
         self._blocks: dict[tuple[int, int], set[int]] = {}
-        self._last_post: dict[tuple[int, int], float] = {}
+        self._pauses: dict[tuple[int, int], float] = {}  # when each pause ends, infinity for one that lasts until a resume
+        self._pending: dict[tuple[int, int, int], tuple[asyncio.Task, int]] = {}  # notices waiting out the patience, with their message
         self._last_ping: dict[tuple[int, int, int], float] = {}
         self._refreshing: set[int] = set()
         self._ended_before_restore: dict[int, list[dict]] = {}
@@ -674,6 +777,7 @@ class Utilities(Module):
         self.bot.timers.handler("tempchannel", self._tempchannel_due)
         self.bot.add_view(GiveawayView(self))
         self._add_prefix_names()
+        await self._forget_ended_pauses()
         await self._load_highlights()
         await self._arm_missing()
 
@@ -720,8 +824,10 @@ class Utilities(Module):
         """Everything is read before anything changes, so a failure leaves every server's highlights as they were, and one bad word costs only that word."""
         words: dict = {}
         blocks: dict = {}
+        pauses: dict = {}
         word_rows = await self.db.all("SELECT guild_id, user_id, word FROM highlight_words")
         block_rows = await self.db.all("SELECT guild_id, user_id, target_id FROM highlight_blocks")
+        pause_rows = await self.db.all("SELECT guild_id, user_id, until FROM highlight_pauses")
         for row in word_rows:
             try:
                 entry = compile_word(row["user_id"], row["word"])
@@ -732,14 +838,20 @@ class Utilities(Module):
                 words.setdefault(row["guild_id"], {}).setdefault(row["user_id"], []).append(entry)
         for row in block_rows:
             blocks.setdefault((row["guild_id"], row["user_id"]), set()).add(row["target_id"])
-        old = self._words, self._indexes, self._blocks
-        self._words, self._indexes, self._blocks = words, {}, blocks
+        for row in pause_rows:
+            pauses[(row["guild_id"], row["user_id"])] = float("inf") if row["until"] is None else float(row["until"])
+        old = self._words, self._indexes, self._blocks, self._pauses
+        self._words, self._indexes, self._blocks, self._pauses = words, {}, blocks, pauses
         try:
             for guild_id in list(words):
                 self._reindex(guild_id)
         except Exception:
-            self._words, self._indexes, self._blocks = old
+            self._words, self._indexes, self._blocks, self._pauses = old
             raise
+
+    async def _forget_ended_pauses(self) -> None:
+        """A pause that ran out is nothing worth keeping about someone."""
+        await self.db.run("DELETE FROM highlight_pauses WHERE until IS NOT NULL AND until <= ?", (time.time(),))
 
     def _reindex(self, guild_id: int) -> None:
         people = self._words.get(guild_id) or {}
@@ -751,151 +863,267 @@ class Utilities(Module):
             self._words.pop(guild_id, None)
 
     def _highlight_allowed(self, member: Any, channel: Any) -> bool:
-        """Seeing the channel is always needed, and for a private thread that means being in it or holding Manage Threads, since Discord's permissions come from the parent. Past that, the same rule as running /highlight there, with the person's permissions in that channel."""
+        """Seeing the channel is always needed, and for a private thread that means being in it or holding Manage Threads, since Discord's permissions come from the parent.
+
+        Past that, the server's rules for who can use /highlight. Rules about channels are left out: they say where a command can be typed,
+        and a notice comes from wherever its word was said.
+        """
         permissions = access.permissions_in(member, channel)
         if not access.can_view(member, channel) and not (channel.type == discord.ChannelType.private_thread and permissions.view_channel and channel.get_member(member.id) is not None):
             return False
-        parent = getattr(channel, "parent", None) if isinstance(channel, discord.Thread) else None
-        place = parent or channel
+        rules = self.bot.settings.get(member.guild.id, COMMANDS_MODULE)
+        overwrites = rules.get("overwrites") or {}
+        own = {key: value for key, value in (overwrites.get("highlight") or {}).items() if key not in ("channel_wl", "channel_bl")}
         who = Who(
             role_ids={role.id for role in member.roles},
             permissions={name for name, on in permissions if on},
             is_owner=member.guild.owner_id == member.id,
         )
         return evaluate(
-            self.bot.settings.get(member.guild.id, COMMANDS_MODULE),
+            {**rules, "channel_bl": [], "channel_wl": [], "overwrites": {**overwrites, "highlight": own}},
             root="highlight",
-            required=("manage_messages",),
             who=who,
-            channel_id=place.id,
-            category_id=getattr(place, "category_id", None),
+            channel_id=channel.id,
         ).allowed
+
+    def _held_back(self, guild_id: int, user_id: int, message: Any, now: float) -> bool:
+        """Whether the person asked not to hear about this message: a pause, or a block on its author, its channel, the channel a thread sits in, or the category."""
+        if self._pauses.get((guild_id, user_id), 0) > now:
+            return True
+        blocked = self._blocks.get((guild_id, user_id))
+        return bool(blocked) and (message.author.id in blocked or not blocked.isdisjoint(_places(message.channel)))
+
+    def _words_in(self, message: Any, guild_id: int, user_id: int) -> list[HighlightWord]:
+        mine = self._words.get(guild_id, {}).get(user_id, [])
+        return sorted(matching_words(highlight_tokens(message.content), build_index(mine)), key=lambda entry: entry.word.casefold())
+
+    async def _is_command(self, message: discord.Message) -> bool:
+        """A line typed to run a command, a shortcut or a tag. One that only starts like a command, such as ".3mf files" where the prefix is a dot, is talk."""
+        ctx = await self.bot.get_context(message)
+        if ctx.prefix is None or not ctx.invoked_with:
+            return False
+        if ctx.command is not None:
+            return True
+        tags = self.bot.module("tags")
+        if tags is not None and await tags.find(message.guild.id, ctx.invoked_with) is not None:
+            return True
+        body = message.content[len(ctx.prefix):].lstrip()
+        return expand_line(self.bot, body) != body
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         guild = message.guild
-        if guild is None or message.author.bot:
+        if guild is None:
+            return
+        self._saw_activity(guild.id, message.channel.id, message.author.id)
+        if message.author.bot:
             return
         index = self._indexes.get(guild.id)
         if index is None:
             return
-        now = time.time()
-        if message.author.id in self._words.get(guild.id, ()):
-            self._last_post[(guild.id, message.author.id)] = now
-        prefixes = tuple(self.bot.settings.get(guild.id, "core")["prefixes"])
-        if prefixes and message.content.startswith(prefixes):  # someone running a command isn't talking about the word
-            return
         tokens = highlight_tokens(message.content)
         if not tokens:
             return
-        hits: dict[int, list[str]] = {}
-        for entry in matching_words(tokens, index):
-            hits.setdefault(entry.user_id, []).append(entry.word)
-        hits.pop(message.author.id, None)
-        for user_id, words in hits.items():
-            await self._notify_highlight(message, user_id, sorted(words), now)
-
-    async def _notify_highlight(self, message: discord.Message, user_id: int, words: list[str], now: float) -> None:
-        guild = message.guild
-        channel = message.channel
-        if now - self._last_post.get((guild.id, user_id), 0) < QUIET_SECONDS:
+        people = {entry.user_id for entry in matching_words(tokens, index)}
+        people.discard(message.author.id)
+        people.difference_update(user.id for user in message.mentions)  # the ping already told them
+        if not people or await self._is_command(message):
             return
-        blocked = self._blocks.get((guild.id, user_id)) or ()
-        parent_id = getattr(channel, "parent_id", None)
-        if message.author.id in blocked or channel.id in blocked or (parent_id and parent_id in blocked):
+        now = time.time()
+        for user_id in people:
+            self._queue_highlight(message, user_id, now)
+
+    @commands.Cog.listener("on_raw_typing")
+    async def _highlight_typing(self, payload: discord.RawTypingEvent) -> None:
+        if payload.guild_id is not None:
+            self._saw_activity(payload.guild_id, payload.channel_id, payload.user_id)
+
+    @commands.Cog.listener("on_raw_reaction_add")
+    async def _highlight_reaction(self, payload: discord.RawReactionActionEvent) -> None:
+        if payload.guild_id is not None:
+            self._saw_activity(payload.guild_id, payload.channel_id, payload.user_id)
+
+    def _saw_activity(self, guild_id: int, channel_id: int, user_id: int) -> None:
+        """Someone who writes, types or reacts in a channel has seen what was said there, so their notice from it doesn't go out."""
+        waiting = self._pending.pop((guild_id, user_id, channel_id), None)
+        if waiting is not None:
+            waiting[0].cancel()
+
+    def _drop_pending(self, message_ids: set[int]) -> None:
+        """A message taken down before its notice went out doesn't reach anyone by DM."""
+        for key, (task, message_id) in list(self._pending.items()):
+            if message_id in message_ids:
+                del self._pending[key]
+                task.cancel()
+
+    def _queue_highlight(self, message: discord.Message, user_id: int, now: float) -> None:
+        """One notice per person and channel waits at a time, and a channel that just sent one stays quiet for HIGHLIGHT_COOLDOWN."""
+        guild = message.guild
+        key = (guild.id, user_id, message.channel.id)
+        if key in self._pending or now - self._last_ping.get(key, 0) < HIGHLIGHT_COOLDOWN or len(self._pending) >= MAX_PENDING_HIGHLIGHTS:
+            return
+        if self._held_back(guild.id, user_id, message, now):
             return
         member = guild.get_member(user_id)
-        if member is None or not self._highlight_allowed(member, channel):
+        if member is None or not self._highlight_allowed(member, message.channel):
             return
-        cooldown_key = (guild.id, user_id, channel.id)
-        if now - self._last_ping.get(cooldown_key, 0) < HIGHLIGHT_COOLDOWN:
-            return
-        self._last_ping[cooldown_key] = now
-        if len(self._last_ping) > 10000:
-            cutoff = now - HIGHLIGHT_COOLDOWN
-            self._last_ping = {key: at for key, at in self._last_ping.items() if at >= cutoff}
-        embed = discord.Embed(title=", ".join(words)[:256], description=await self._highlight_context(message, member), color=BLUE, timestamp=message.created_at)
-        embed.add_field(name="Message", value=f"[Jump to it]({message.jump_url})")
-        try:
-            await member.send(f"A word you follow came up in {channel.mention} in {guild.name}.", embed=embed, allowed_mentions=NO_PINGS)
-        except discord.HTTPException:
-            pass  # closed DMs are the person's choice
+        task = asyncio.ensure_future(self._deliver_highlight(message, member, key))
+        self._pending[key] = (task, message.id)
+        self._tasks.add(task)
+        task.add_done_callback(functools.partial(self._highlight_done, key))
 
-    async def _highlight_context(self, message: discord.Message, member: Any) -> str:
-        """The few messages before this one, so the notice makes sense on its own. Someone without Read Message History only gets the one that set it off, which Discord would show them anyway."""
-        lines: list[str] = []
+    def _highlight_done(self, key: tuple[int, int, int], task: asyncio.Task) -> None:
+        self._tasks.discard(task)
+        if self._pending.get(key, (None,))[0] is task:
+            del self._pending[key]
+
+    async def _deliver_highlight(self, message: discord.Message, member: Any, key: tuple[int, int, int]) -> None:
+        """Waits HIGHLIGHT_PATIENCE for the person to show they saw the message, then sends the notice. Everything is checked again after the wait, since a word, a block or a pause can change in it."""
+        await asyncio.sleep(HIGHLIGHT_PATIENCE)
+        if self._pending.get(key, (None,))[0] is asyncio.current_task():
+            del self._pending[key]  # past the wait, so writing in the channel no longer holds it back
+        guild_id, user_id, _ = key
+        now = time.time()
+        try:
+            words = self._words_in(message, guild_id, user_id)
+            if not words or self._held_back(guild_id, user_id, message, now) or not self._highlight_allowed(member, message.channel):
+                return
+            self._last_ping[key] = now
+            if len(self._last_ping) > 10000:
+                cutoff = now - HIGHLIGHT_COOLDOWN
+                self._last_ping = {k: at for k, at in self._last_ping.items() if at >= cutoff}
+            embed = discord.Embed(description=await self._highlight_context(message, member, words), color=BLUE, timestamp=message.created_at)
+            embed.set_author(name=message.author.display_name[:256], icon_url=message.author.display_avatar.url)
+            view = discord.ui.View(timeout=None)
+            view.add_item(discord.ui.Button(label="Go to message", url=message.jump_url))
+            said = _named([entry.word for entry in words])
+            text = f"{said} came up in {message.channel.mention} in **{discord.utils.escape_markdown(message.guild.name)}**."
+            try:
+                await member.send(text, embed=embed, view=view, allowed_mentions=NO_PINGS)
+            except discord.HTTPException:
+                pass  # closed DMs are the person's choice
+        except Exception:
+            log.exception("A highlight notice in %s failed", guild_id)
+
+    async def _highlight_context(self, message: discord.Message, member: Any, words: Iterable[HighlightWord] = ()) -> str:
+        """The message that set it off, with the words that matched in bold, after the few before it so the notice makes sense on its own.
+
+        Someone without Read Message History only gets the one that set it off, which Discord would show them anyway. When the lines run
+        long, the oldest go first.
+        """
+        text = self._context_line(message, marked_spans(message.content, words))
         if access.permissions_in(member, message.channel).read_message_history:
             try:
                 async for earlier in message.channel.history(limit=3, before=message):
-                    lines.append(self._context_line(earlier))
+                    line = self._context_line(earlier)
+                    if len(line) + 1 + len(text) > EMBED_TEXT_MAX:
+                        break
+                    text = f"{line}\n{text}"
             except discord.HTTPException:
                 pass
-        lines.reverse()
-        lines.append(self._context_line(message))
-        return "\n".join(lines)[:4000]
+        return text[:EMBED_TEXT_MAX]
 
     @staticmethod
-    def _context_line(message: Any) -> str:
-        text = message.content or ("(attachment)" if message.attachments else "(no text)")
+    def _context_line(message: Any, spans: list[tuple[int, int]] | None = None) -> str:
+        """One line of the conversation. The line that set the notice off has its matches marked and more room than the ones before it."""
+        if message.content:
+            text = marked_text(message.content, spans or [], TRIGGER_LINE_MAX if spans is not None else EARLIER_LINE_MAX)
+        else:
+            text = "(attachment)" if message.attachments else "(no text)"
         name = discord.utils.escape_markdown(message.author.display_name)
-        return f"**[{message.created_at.strftime('%H:%M:%S')}] {name}:** {text[:300]}"
+        return f"<t:{int(message.created_at.timestamp())}:t> **{name}:** {text}"
+
+    async def cog_before_invoke(self, ctx: commands.Context) -> None:
+        """A typed highlight command comes down at once, since it names words a person follows or people they don't want to hear from."""
+        if ctx.interaction is None and ctx.command is not None and ctx.command.qualified_name.partition(" ")[0] == "highlight":
+            try:
+                await ctx.message.delete()
+            except discord.HTTPException:
+                pass
+
+    @staticmethod
+    def _typed(ctx: commands.Context) -> dict:
+        """A typed highlight answer comes down after ten seconds, since the channel can see it. A slash answer is private already."""
+        return {} if ctx.interaction is not None else {"delete_after": 10}
+
+    @staticmethod
+    def _pause_end(until: float) -> str:
+        return "until you run `/highlight resume`" if until == float("inf") else f"until <t:{int(until)}:f>"
 
     @commands.hybrid_group(name="highlight", aliases=["hl"], fallback="show", description="Get a DM when a word you follow comes up")
     @commands.guild_only()
-    @requires("manage_messages")
     async def highlight(self, ctx: commands.Context) -> None:
         words = await self.db.all("SELECT word FROM highlight_words WHERE guild_id = ? AND user_id = ? ORDER BY word", (ctx.guild.id, ctx.author.id))
         blocks = await self.db.all("SELECT target_id, kind FROM highlight_blocks WHERE guild_id = ? AND user_id = ?", (ctx.guild.id, ctx.author.id))
-        if not words and not blocks:
-            await ctx.send("You don't follow any words yet. Add one with `/highlight add`.", ephemeral=True)
+        until = self._pauses.get((ctx.guild.id, ctx.author.id), 0)
+        paused = until > time.time()
+        if not words and not blocks and not paused:
+            await ctx.send("You don't follow any words yet. Add one with `/highlight add`.", ephemeral=True, **self._typed(ctx))
             return
-        lines = ["**Your words**", *(row["word"] for row in words)]
+        lines = [f"**Paused** {self._pause_end(until)}"] if paused else []
+        if words:
+            lines += ["**Your words**", *(row["word"] for row in words)]
         if blocks:
             lines.append("**Blocked**")
             lines += [f"<#{row['target_id']}>" if row["kind"] == "channel" else f"<@{row['target_id']}>" for row in blocks]
-        await ctx.send("\n".join(lines)[:DISCORD_TEXT_MAX], ephemeral=True, allowed_mentions=NO_PINGS)
+        await ctx.send("\n".join(lines)[:DISCORD_TEXT_MAX], ephemeral=True, allowed_mentions=NO_PINGS, **self._typed(ctx))
 
     @highlight.command(name="add", aliases=["+"], description="Get a DM when this word or phrase comes up")
-    @requires("manage_messages")
     @app_commands.describe(word="A word, or several words in a row")
     async def highlight_add(self, ctx: commands.Context, *, word: str) -> None:
+        typed = self._typed(ctx)
         word = " ".join(word.split())
         if _ID_IN_TEXT.search(word) or "@everyone" in word or "@here" in word:
-            await ctx.fail("A highlight can't hold a mention.")
+            await ctx.fail("A highlight can't hold a mention.", **typed)
             return
         tokens = highlight_tokens(word)
         if len("".join(tokens)) < 2 or len(word) > MAX_HIGHLIGHT_LENGTH:
-            await ctx.fail(f"A highlight needs 2 to {MAX_HIGHLIGHT_LENGTH} characters, with letters or numbers in it.")
+            await ctx.fail(f"A highlight needs 2 to {MAX_HIGHLIGHT_LENGTH} characters, with letters or numbers in it.", **typed)
             return
         mine = self._words.get(ctx.guild.id, {}).get(ctx.author.id, [])
         if len(mine) >= MAX_HIGHLIGHT_WORDS:
-            await ctx.fail(f"You can follow up to {MAX_HIGHLIGHT_WORDS} words. Remove one first.")
+            await ctx.fail(f"You can follow up to {MAX_HIGHLIGHT_WORDS} words. Remove one first.", **typed)
             return
         if any(entry.word.casefold() == word.casefold() for entry in mine):
-            await ctx.fail("You already follow that.")
+            await ctx.fail("You already follow that.", **typed)
             return
+        first = not mine
         await self.db.run(
             "INSERT INTO highlight_words (guild_id, user_id, word, created_at) VALUES (?, ?, ?, ?)",
             (ctx.guild.id, ctx.author.id, word, time.time()),
         )
         self._words.setdefault(ctx.guild.id, {}).setdefault(ctx.author.id, []).append(compile_word(ctx.author.id, word))
         self._reindex(ctx.guild.id)
-        await ctx.ok(f"You'll get a DM when `{discord.utils.escape_markdown(word)}` comes up.")
+        shown = discord.utils.escape_markdown(word)
+        if first and not await self._reaches_dms(ctx.author, ctx.guild):
+            await ctx.ok(f"You follow `{shown}` now, but your DMs are closed to this server, so notices can't reach you. Turn on Direct Messages in this server's Privacy Settings.", **typed)
+            return
+        await ctx.ok(f"You'll get a DM when `{shown}` comes up.", **typed)
+
+    @staticmethod
+    async def _reaches_dms(member: Any, guild: Any) -> bool:
+        """Sends the first DM a person gets from highlights in a server, which is how to learn whether notices can reach them. Only Discord refusing it counts as no."""
+        try:
+            await member.send(f"Highlight notices from **{discord.utils.escape_markdown(guild.name)}** come here.", allowed_mentions=NO_PINGS)
+        except discord.Forbidden:
+            return False
+        except discord.HTTPException:
+            pass
+        return True
 
     @highlight.command(name="remove", aliases=["-", "del"], description="Stop following a word")
-    @requires("manage_messages")
     @app_commands.describe(word="The word to stop following")
     async def highlight_remove(self, ctx: commands.Context, *, word: str) -> None:
         mine = self._words.get(ctx.guild.id, {}).get(ctx.author.id, [])
         wanted = " ".join(word.split()).casefold()
         target = next((entry for entry in mine if entry.word.casefold() == wanted), None)
         if target is None:
-            await ctx.fail("You don't follow that word.")
+            await ctx.fail("You don't follow that word.", **self._typed(ctx))
             return
         await self.db.run("DELETE FROM highlight_words WHERE guild_id = ? AND user_id = ? AND word = ?", (ctx.guild.id, ctx.author.id, target.word))
         mine.remove(target)
         self._reindex(ctx.guild.id)
-        await ctx.ok("Removed.")
+        await ctx.ok("Removed.", **self._typed(ctx))
 
     @highlight_remove.autocomplete("word")
     async def _highlight_remove_names(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
@@ -904,35 +1132,43 @@ class Utilities(Module):
         return [app_commands.Choice(name=entry.word[:100], value=entry.word[:100]) for entry in mine if needle in entry.word.casefold()][:25]
 
     @highlight.command(name="clear", description="Stop following all your words")
-    @requires("manage_messages")
     async def highlight_clear(self, ctx: commands.Context) -> None:
         await self.db.run("DELETE FROM highlight_words WHERE guild_id = ? AND user_id = ?", (ctx.guild.id, ctx.author.id))
         self._words.get(ctx.guild.id, {}).pop(ctx.author.id, None)
         self._reindex(ctx.guild.id)
-        await ctx.ok("You no longer follow any words here.")
+        await ctx.ok("You no longer follow any words here.", **self._typed(ctx))
 
     @highlight.command(name="matches", aliases=["m", "match"], description="Test which of your words a sentence would set off")
-    @requires("manage_messages")
     @app_commands.describe(words="The sentence to test")
     async def highlight_matches(self, ctx: commands.Context, *, words: str) -> None:
         mine = self._words.get(ctx.guild.id, {}).get(ctx.author.id, [])
         found = matching_words(highlight_tokens(words), build_index(mine))
         if found:
-            await ctx.send("That would set off: " + ", ".join(sorted(entry.word for entry in found)), ephemeral=True, allowed_mentions=NO_PINGS)
+            await ctx.send("That would set off: " + ", ".join(sorted(entry.word for entry in found)), ephemeral=True, allowed_mentions=NO_PINGS, **self._typed(ctx))
         else:
-            await ctx.send("That wouldn't set off any of your words.", ephemeral=True)
+            await ctx.send("That wouldn't set off any of your words.", ephemeral=True, **self._typed(ctx))
 
     def _highlight_targets(self, ctx: commands.Context, text: str | None) -> list[tuple[int, str]] | None:
-        """Channels and people named in text. Nothing named means this channel. None means a name wasn't found."""
+        """Channels, categories and people named in text. Nothing named means this channel. None means a name wasn't found.
+
+        A channel the person can't see counts as not found, so a name or ID can't tell them a hidden channel exists.
+        """
         if not (text or "").strip():
             return [(ctx.channel.id, "channel")]
         targets: list[tuple[int, str]] = []
         leftover = _ID_IN_TEXT.sub(" ", text).split()
         for value in ids_in(text):
-            targets.append((value, "channel" if ctx.guild.get_channel_or_thread(value) is not None else "user"))
+            channel = ctx.guild.get_channel_or_thread(value)
+            if channel is None:
+                targets.append((value, "user"))
+            elif access.can_view(ctx.author, channel):
+                targets.append((value, "channel"))
+            else:
+                return None
         channels: dict[str, int] = {}
         for channel in ctx.guild.channels:
-            channels.setdefault(channel.name.casefold(), channel.id)
+            if access.can_view(ctx.author, channel):
+                channels.setdefault(channel.name.casefold(), channel.id)
         people: dict[str, int] = {}
         if any(word.lstrip("#@").casefold() not in channels for word in leftover):  # one pass over the member list however many names there are
             for member in ctx.guild.members:
@@ -951,42 +1187,131 @@ class Utilities(Module):
     async def _refuse_many_targets(self, ctx: commands.Context, text: str | None) -> bool:
         if len((text or "").split()) <= MAX_NAMED:
             return False
-        await ctx.fail(f"Name at most {MAX_NAMED} channels or people at a time.")
+        await ctx.fail(f"Name at most {MAX_NAMED} channels or people at a time.", **self._typed(ctx))
         return True
 
-    @highlight.command(name="block", description="Stop notices from a channel or person")
-    @requires("manage_messages")
-    @app_commands.describe(blocks="Channels or people, by mention, ID or name. Leave empty for this channel.")
+    @highlight.command(name="block", description="Stop notices from a channel, a category or a person")
+    @app_commands.describe(blocks="Channels, categories or people, by mention, ID or name. Leave empty for this channel.")
     async def highlight_block(self, ctx: commands.Context, *, blocks: str | None = None) -> None:
         if await self._refuse_many_targets(ctx, blocks):
             return
         targets = self._highlight_targets(ctx, blocks)
         if targets is None:
-            await ctx.fail("I can't find one of those channels or people.")
+            await ctx.fail("I can't find one of those channels or people.", **self._typed(ctx))
             return
         await self.db.many(
             "INSERT INTO highlight_blocks (guild_id, user_id, target_id, kind) VALUES (?, ?, ?, ?) ON CONFLICT (guild_id, user_id, target_id) DO NOTHING",
             [(ctx.guild.id, ctx.author.id, target, kind) for target, kind in targets],
         )
         self._blocks.setdefault((ctx.guild.id, ctx.author.id), set()).update(target for target, _ in targets)
-        await ctx.ok("Blocked. " + ", ".join(f"<#{t}>" if kind == "channel" else f"<@{t}>" for t, kind in targets))
+        await ctx.ok("Blocked. " + ", ".join(f"<#{t}>" if kind == "channel" else f"<@{t}>" for t, kind in targets), **self._typed(ctx))
 
-    @highlight.command(name="unblock", description="Allow notices from a channel or person again")
-    @requires("manage_messages")
-    @app_commands.describe(blocks="Channels or people, by mention, ID or name. Leave empty for this channel.")
+    @highlight.command(name="unblock", description="Allow notices from a channel, a category or a person again")
+    @app_commands.describe(blocks="Channels, categories or people, by mention, ID or name. Leave empty for this channel.")
     async def highlight_unblock(self, ctx: commands.Context, *, blocks: str | None = None) -> None:
         if await self._refuse_many_targets(ctx, blocks):
             return
         targets = self._highlight_targets(ctx, blocks)
         if targets is None:
-            await ctx.fail("I can't find one of those channels or people.")
+            await ctx.fail("I can't find one of those channels or people.", **self._typed(ctx))
             return
         await self.db.many(
             "DELETE FROM highlight_blocks WHERE guild_id = ? AND user_id = ? AND target_id = ?",
             [(ctx.guild.id, ctx.author.id, target) for target, _ in targets],
         )
         self._blocks.get((ctx.guild.id, ctx.author.id), set()).difference_update(target for target, _ in targets)
-        await ctx.ok("Unblocked.")
+        await ctx.ok("Unblocked.", **self._typed(ctx))
+
+    @highlight.command(name="clearblocks", description="Unblock every channel, category and person at once")
+    async def highlight_clearblocks(self, ctx: commands.Context) -> None:
+        if not self._blocks.get((ctx.guild.id, ctx.author.id)):
+            await ctx.fail("You haven't blocked anything here.", **self._typed(ctx))
+            return
+        await self.db.run("DELETE FROM highlight_blocks WHERE guild_id = ? AND user_id = ?", (ctx.guild.id, ctx.author.id))
+        self._blocks.pop((ctx.guild.id, ctx.author.id), None)
+        await ctx.ok("Unblocked everything.", **self._typed(ctx))
+
+    @highlight.command(name="pause", aliases=["disable", "dnd"], description="Stop your highlight DMs here for a while, or until you resume them")
+    @app_commands.describe(duration="How long, such as 2h, 3 days or tomorrow at noon (UTC). Empty pauses until you resume.")
+    async def highlight_pause(self, ctx: commands.Context, *, duration: str | None = None) -> None:
+        typed = self._typed(ctx)
+        until: float | None = None
+        if (duration or "").strip():
+            moment = parse_moment(duration, datetime.datetime.now(UTC))
+            if moment is None:
+                await ctx.fail("I can't read that as a length of time or a date. Try 2h, 3 days or tomorrow at noon.", **typed)
+                return
+            until = moment.timestamp()
+            if until <= time.time():
+                await ctx.fail("That time has already passed.", **typed)
+                return
+        await self.db.run(
+            "INSERT INTO highlight_pauses (guild_id, user_id, until) VALUES (?, ?, ?) ON CONFLICT (guild_id, user_id) DO UPDATE SET until = excluded.until",
+            (ctx.guild.id, ctx.author.id, until),
+        )
+        self._pauses[(ctx.guild.id, ctx.author.id)] = float("inf") if until is None else until
+        await ctx.ok(f"Your highlight DMs here are paused {self._pause_end(self._pauses[(ctx.guild.id, ctx.author.id)])}.", **typed)
+
+    @highlight.command(name="resume", aliases=["enable"], description="Turn your highlight DMs here back on")
+    async def highlight_resume(self, ctx: commands.Context) -> None:
+        key = (ctx.guild.id, ctx.author.id)
+        paused = self._pauses.pop(key, 0) > time.time()
+        await self.db.run("DELETE FROM highlight_pauses WHERE guild_id = ? AND user_id = ?", key)
+        if not paused:
+            await ctx.fail("Your highlight DMs here aren't paused.", **self._typed(ctx))
+            return
+        await ctx.ok("Your highlight DMs here are back on.", **self._typed(ctx))
+
+    def _import_sources(self, user_id: int, here: int) -> list[tuple[int, str]]:
+        """The other servers where this person follows words, by name."""
+        found = []
+        for guild_id, people in self._words.items():
+            if guild_id != here and people.get(user_id):
+                guild = self.bot.get_guild(guild_id)
+                found.append((guild_id, guild.name if guild is not None else f"Server {guild_id}"))
+        return sorted(found, key=lambda pair: pair[1].casefold())
+
+    @highlight.command(name="import", aliases=["transfer"], description="Copy the words you follow in another server to this one")
+    @app_commands.describe(server="The server to copy your words from")
+    async def highlight_import(self, ctx: commands.Context, *, server: str) -> None:
+        typed = self._typed(ctx)
+        wanted = server.strip()
+        if wanted == str(ctx.guild.id) or wanted.casefold() == ctx.guild.name.casefold():
+            await ctx.fail("Name another server. These are the words you follow here.", **typed)
+            return
+        sources = self._import_sources(ctx.author.id, ctx.guild.id)
+        matches = [pair for pair in sources if str(pair[0]) == wanted] or [pair for pair in sources if pair[1].casefold() == wanted.casefold()]
+        if len(matches) != 1:
+            await ctx.fail("You don't follow words in a server by that name or ID." if not matches else "More than one server has that name. Use its ID.", **typed)
+            return
+        source_id, source_name = matches[0]
+        mine = self._words.setdefault(ctx.guild.id, {}).setdefault(ctx.author.id, [])
+        have = {entry.word.casefold() for entry in mine}
+        new: list[HighlightWord] = []
+        for entry in self._words.get(source_id, {}).get(ctx.author.id, []):
+            if entry.word.casefold() not in have:
+                have.add(entry.word.casefold())
+                new.append(HighlightWord(ctx.author.id, entry.word, entry.forms))
+        room = max(0, MAX_HIGHLIGHT_WORDS - len(mine))
+        taken, left = new[:room], len(new) - room
+        if not taken:
+            self._reindex(ctx.guild.id)
+            await ctx.fail("You already follow every word you have there." if not new else f"You follow {MAX_HIGHLIGHT_WORDS} words here already. Remove some first.", **typed)
+            return
+        now = time.time()
+        await self.db.many(
+            "INSERT INTO highlight_words (guild_id, user_id, word, created_at) VALUES (?, ?, ?, ?) ON CONFLICT (guild_id, user_id, word) DO NOTHING",
+            [(ctx.guild.id, ctx.author.id, entry.word, now) for entry in taken],
+        )
+        mine.extend(taken)
+        self._reindex(ctx.guild.id)
+        copied = f"Copied {len(taken)} word{'s' if len(taken) != 1 else ''} from **{discord.utils.escape_markdown(source_name)}**."
+        await ctx.ok(copied + (f" {left} more didn't fit under the limit of {MAX_HIGHLIGHT_WORDS}." if left > 0 else ""), **typed)
+
+    @highlight_import.autocomplete("server")
+    async def _highlight_import_servers(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+        needle = current.casefold()
+        return [app_commands.Choice(name=name[:100], value=str(guild_id)) for guild_id, name in self._import_sources(interaction.user.id, interaction.guild_id) if needle in name.casefold()][:25]
 
     # ---- reminders ----
 
@@ -1424,10 +1749,12 @@ class Utilities(Module):
 
     @commands.Cog.listener()
     async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+        self._drop_pending({payload.message_id})
         await self._giveaway_messages_gone(payload.guild_id, [payload.message_id])
 
     @commands.Cog.listener()
     async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent) -> None:
+        self._drop_pending(set(payload.message_ids))
         await self._giveaway_messages_gone(payload.guild_id, list(payload.message_ids))
 
     async def _giveaway_messages_gone(self, guild_id: int | None, message_ids: list[int]) -> None:

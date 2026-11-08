@@ -1,12 +1,15 @@
+import asyncio
 import datetime
 import json
 import time
 import types
+import unicodedata
 from unittest import mock
 
 import discord
 
 from captainguild.modules import utilities
+from captainguild.modules.tags import Tags
 from captainguild.modules.utilities import (
     DumpError,
     EndGiveawayView,
@@ -16,8 +19,11 @@ from captainguild.modules.utilities import (
     compile_word,
     dump_line,
     highlight_tokens,
+    marked_spans,
+    marked_text,
     matching_words,
     parse_dump_query,
+    placed_tokens,
     parse_moment,
     parse_when,
     select_members,
@@ -136,117 +142,366 @@ class HighlightWordsTest(BotTest):
         self.assertEqual(word_forms("bus"), {"bus"})
         self.assertEqual(word_forms("class"), {"class"})
 
+    def test_placed_words_are_the_same_words_at_their_places(self):
+        for text in (
+            "Is the PRINTER on fire?", "caf\u00e9 time", "cafe\u0301 time", "Stra\u00dfe and \ufb01re", "don't \u2019quote\u2019",
+            "<@123> see https://printer.example/x <:printer:1234567890> printer", "\u0130stanbul \u2460 \u00bd", "<https://x.com/a> b", "",
+        ):
+            placed = placed_tokens(text)
+            self.assertEqual([token for token, _, _ in placed], highlight_tokens(text), text)
+            for token, start, end in placed:
+                self.assertIn(token, _fold_for_test(text[start:end]), text)
+
+    def test_marked_spans_cover_each_match_in_the_original_text(self):
+        text = "My Printer, and the PRINTERS on the acme  printer line"
+        spans = marked_spans(text, [compile_word(1, "printer"), compile_word(1, "acme printer")])
+        self.assertEqual([text[start:end] for start, end in spans], ["Printer", "PRINTERS", "acme  printer"])
+        self.assertEqual(marked_spans("caf\u00e9 time", [compile_word(1, "cafe")]), [(0, 4)])
+        self.assertEqual(marked_spans("see https://printer.example", [compile_word(1, "printer")]), [])
+
+    def test_the_patience_is_ten_seconds(self):
+        self.assertEqual(utilities.HIGHLIGHT_PATIENCE, 10)
+
+    def test_marked_text_bolds_and_cuts_around_the_first_match(self):
+        self.assertEqual(marked_text("my printer broke", [(3, 10)], 100), "my **printer** broke")
+        long = "x" * 3000 + " printer " + "y" * 3000
+        shown = marked_text(long, [(3001, 3008)], 1000)
+        self.assertIn("**printer**", shown)
+        self.assertTrue(shown.startswith("\N{HORIZONTAL ELLIPSIS}") and shown.endswith("\N{HORIZONTAL ELLIPSIS}"))
+        self.assertLessEqual(len(shown), 1000 + 6)
+        self.assertEqual(marked_text("short", [], 1000), "short")
+
+
+def _fold_for_test(text):
+    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)).casefold().replace("'", "").replace("\u2019", "")
+
 
 class HighlightFlowTest(BotTest):
     modules = [Utilities]
 
     async def asyncSetUp(self):
         await super().asyncSetUp()
+        patience = mock.patch.object(utilities, "HIGHLIGHT_PATIENCE", 0)
+        patience.start()
+        self.addCleanup(patience.stop)
+        self.bot._connection.user = self.me  # telling a command from talk reads the bot's own mention as a prefix
         self.cog_ = self.cog(Utilities)
         self.guild.default_role.permissions = FakePermissions("view_channel", "read_message_history")
-        self.follower = self.mod  # holds Manage Messages
-        self.speaker = self.member
+        self.follower = self.member  # no Manage Messages, which a highlight doesn't need
+        self.speaker = self.mod
 
     async def add(self, word, who=None):
         ctx = self.context(author=who or self.follower)
         await self.cog_.highlight_add.callback(self.cog_, ctx, word=word)
         return ctx
 
-    def say(self, text, author=None, channel=None):
-        return FakeMessage(channel or self.channel, author or self.speaker, text)
+    def say(self, text, author=None, channel=None, **kwargs):
+        return FakeMessage(channel or self.channel, author or self.speaker, text, **kwargs)
 
-    async def test_a_word_sends_a_dm_with_a_link_and_context(self):
+    async def post(self, message):
+        """The message comes in, and every notice it starts runs to the end."""
+        await self.cog_.on_message(message)
+        await self.settle()
+
+    async def settle(self):
+        while self.cog_._tasks:
+            await asyncio.gather(*list(self.cog_._tasks), return_exceptions=True)
+
+    @staticmethod
+    def notices(member):
+        return [dm for dm in member.dms if dm.get("embed") is not None]
+
+    async def test_a_word_sends_a_dm_with_the_word_marked_context_and_a_button(self):
         await self.add("printer")
         earlier = FakeMessage(self.channel, self.speaker, "before that")
         self.channel.sent.append(earlier)
         message = self.say("my printer broke")
-        await self.cog_.on_message(message)
-        self.assertEqual(len(self.follower.dms), 1)
-        dm = self.follower.dms[0]
-        self.assertIn(self.channel.mention, dm["content"])
+        await self.post(message)
+        self.assertEqual(len(self.notices(self.follower)), 1)
+        dm = self.notices(self.follower)[0]
+        self.assertEqual(dm["content"], f"**printer** came up in {self.channel.mention} in **{self.guild.name}**.")
         embed = dm["embed"]
-        self.assertEqual(embed.title, "printer")
-        self.assertIn("my printer broke", embed.description)
-        self.assertIn("before that", embed.description)
-        self.assertIn(message.jump_url, embed.fields[0].value)
+        self.assertIn("my **printer** broke", embed.description)
+        self.assertLess(embed.description.index("before that"), embed.description.index("my **printer** broke"))
+        self.assertEqual(embed.author.name, self.speaker.display_name)
+        button = dm["view"].children[0]
+        self.assertEqual((button.label, button.url), ("Go to message", message.jump_url))
+
+    async def test_the_first_word_sends_a_welcome_dm_and_warns_when_dms_are_closed(self):
+        await self.add("printer")
+        self.assertEqual([dm["content"] for dm in self.follower.dms], [f"Highlight notices from **{self.guild.name}** come here."])
+        await self.add("filament")
+        self.assertEqual(len(self.follower.dms), 1)
+
+        async def closed(*args, **kwargs):
+            raise discord.Forbidden(types.SimpleNamespace(status=403, reason="closed"), "Cannot send messages to this user")
+
+        self.admin.send = closed
+        ctx = await self.add("printer", who=self.admin)
+        self.assertIn("DMs are closed", ctx.oks[0])
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM highlight_words WHERE user_id = ?", (self.admin.id,)), 1)
 
     async def test_your_own_message_and_bots_do_not_notify(self):
         await self.add("printer")
-        await self.cog_.on_message(self.say("printer", author=self.follower))
+        await self.post(self.say("printer", author=self.follower))
         robot = FakeMember(self.guild, "robot", bot=True)
-        await self.cog_.on_message(self.say("printer", author=robot))
-        self.assertEqual(self.follower.dms, [])
+        await self.post(self.say("printer", author=robot))
+        self.assertEqual(self.notices(self.follower), [])
 
-    async def test_posting_in_the_last_five_minutes_silences_it(self):
+    async def test_a_mention_already_told_them(self):
         await self.add("printer")
-        await self.cog_.on_message(self.say("hello", author=self.follower))
+        await self.post(self.say("printer", mentions=[self.follower]))
+        self.assertEqual(self.notices(self.follower), [])
+
+    async def test_writing_typing_or_reacting_in_that_channel_drops_the_notice(self):
+        await self.add("printer")
+        other = FakeChannel(self.guild, "other")
+        for show_up in (
+            lambda: self.cog_.on_message(self.say("on it", author=self.follower)),
+            lambda: self.cog_._highlight_typing(types.SimpleNamespace(guild_id=self.guild.id, channel_id=self.channel.id, user_id=self.follower.id)),
+            lambda: self.cog_._highlight_reaction(types.SimpleNamespace(guild_id=self.guild.id, channel_id=self.channel.id, user_id=self.follower.id)),
+        ):
+            await self.cog_.on_message(self.say("printer"))
+            await show_up()
+            await self.settle()
+        self.assertEqual(self.notices(self.follower), [])
         await self.cog_.on_message(self.say("printer"))
-        self.assertEqual(self.follower.dms, [])
-        self.cog_._last_post[(self.guild.id, self.follower.id)] = time.time() - 301
-        await self.cog_.on_message(self.say("printer"))
-        self.assertEqual(len(self.follower.dms), 1)
+        await self.cog_.on_message(self.say("elsewhere", author=self.follower, channel=other))
+        await self.cog_._highlight_typing(types.SimpleNamespace(guild_id=self.guild.id, channel_id=self.channel.id, user_id=self.admin.id))
+        await self.settle()
+        self.assertEqual(len(self.notices(self.follower)), 1)
+
+    async def test_a_notice_waits_out_the_patience(self):
+        with mock.patch.object(utilities, "HIGHLIGHT_PATIENCE", 30):
+            await self.add("printer")
+            await self.cog_.on_message(self.say("printer"))
+            for _ in range(5):
+                await asyncio.sleep(0)
+            self.assertEqual(self.notices(self.follower), [])
+            self.assertEqual(len(self.cog_._pending), 1)
+            for task, _ in list(self.cog_._pending.values()):
+                task.cancel()
+            await self.settle()
+
+    async def test_a_message_taken_down_before_the_notice_sends_nothing(self):
+        await self.add("printer")
+        message = self.say("printer")
+        await self.cog_.on_message(message)
+        await self.cog_.on_raw_message_delete(types.SimpleNamespace(message_id=message.id, guild_id=self.guild.id, channel_id=self.channel.id))
+        bulk = self.say("printer", channel=FakeChannel(self.guild, "other"))
+        await self.cog_.on_message(bulk)
+        await self.cog_.on_raw_bulk_message_delete(types.SimpleNamespace(message_ids={bulk.id}, guild_id=self.guild.id, channel_id=bulk.channel.id))
+        await self.settle()
+        self.assertEqual(self.notices(self.follower), [])
+
+    async def test_a_word_removed_during_the_wait_sends_nothing(self):
+        await self.add("printer")
+        with mock.patch.object(utilities, "HIGHLIGHT_PATIENCE", 1):  # long enough for the removal's database write to land first
+            await self.cog_.on_message(self.say("printer"))
+            await self.cog_.highlight_remove.callback(self.cog_, self.context(author=self.follower), word="printer")
+            await self.settle()
+        self.assertEqual(self.notices(self.follower), [])
 
     async def test_needs_channel_access(self):
         await self.add("printer")
         secret = FakeChannel(self.guild, "secret")
         secret.permissions_for = lambda member: FakePermissions("manage_messages")
-        await self.cog_.on_message(self.say("printer", channel=secret))
-        self.assertEqual(self.follower.dms, [])
+        await self.post(self.say("printer", channel=secret))
+        self.assertEqual(self.notices(self.follower), [])
 
-    async def test_needs_manage_messages_in_the_channel(self):
-        await self.add("printer", who=self.member)
-        await self.cog_.on_message(self.say("printer", author=self.mod))
-        self.assertEqual(self.member.dms, [])
+    async def test_everyone_can_follow_words(self):
+        plain = FakeMember(self.guild, "plain")
+        await self.add("printer", who=plain)
+        await self.post(self.say("printer"))
+        self.assertEqual(len(self.notices(plain)), 1)
 
-    async def test_a_bypass_role_for_the_command_counts(self):
-        await self.bot.settings.save(self.guild.id, "commands", {"overwrites": {"highlight": {"bypass_roles": [self.role_member.id]}}})
-        await self.add("printer", who=self.member)
-        await self.cog_.on_message(self.say("printer", author=self.mod))
-        self.assertEqual(len(self.member.dms), 1)
-
-    async def test_a_disabled_command_stops_notices(self):
+    async def test_who_can_use_the_command_decides_who_gets_notices(self):
         await self.add("printer")
+        await self.bot.settings.save(self.guild.id, "commands", {"overwrites": {"highlight": {"role_bl": [self.role_member.id]}}})
+        await self.post(self.say("printer"))
+        self.assertEqual(self.notices(self.follower), [])
         await self.bot.settings.save(self.guild.id, "commands", {"overwrites": {"highlight": {"enabled": False}}})
-        await self.cog_.on_message(self.say("printer"))
-        self.assertEqual(self.follower.dms, [])
+        await self.post(self.say("printer", channel=FakeChannel(self.guild, "other")))
+        self.assertEqual(self.notices(self.follower), [])
+
+    async def test_rules_on_where_commands_are_typed_do_not_stop_notices(self):
+        await self.add("printer")
+        bots = FakeChannel(self.guild, "bots")
+        await self.bot.settings.save(self.guild.id, "commands", {"channel_bl": [self.channel.id], "overwrites": {"highlight": {"channel_wl": [bots.id], "channel_bl": [self.channel.id]}}})
+        await self.post(self.say("printer"))
+        self.assertEqual(len(self.notices(self.follower)), 1)
 
     async def test_block_and_unblock_a_channel_and_a_person(self):
         await self.add("printer")
         ctx = self.context(author=self.follower)
         await self.cog_.highlight_block.callback(self.cog_, ctx, blocks=self.speaker.mention)
-        await self.cog_.on_message(self.say("printer"))
-        self.assertEqual(self.follower.dms, [])
+        await self.post(self.say("printer"))
+        self.assertEqual(self.notices(self.follower), [])
         await self.cog_.highlight_unblock.callback(self.cog_, ctx, blocks=self.speaker.mention)
         await self.cog_.highlight_block.callback(self.cog_, ctx, blocks=None)
-        await self.cog_.on_message(self.say("printer"))
-        self.assertEqual(self.follower.dms, [])
+        await self.post(self.say("printer"))
+        self.assertEqual(self.notices(self.follower), [])
         await self.cog_.highlight_unblock.callback(self.cog_, ctx, blocks=None)
-        await self.cog_.on_message(self.say("printer"))
-        self.assertEqual(len(self.follower.dms), 1)
+        await self.post(self.say("printer"))
+        self.assertEqual(len(self.notices(self.follower)), 1)
+
+    async def test_a_blocked_category_covers_its_channels(self):
+        await self.add("printer")
+        category = FakeChannel(self.guild, "printers", discord.ChannelType.category)
+        inside = FakeChannel(self.guild, "x1c", category=category)
+        ctx = self.context(author=self.follower)
+        await self.cog_.highlight_block.callback(self.cog_, ctx, blocks="printers")
+        self.assertEqual(ctx.fails, [])
+        await self.post(self.say("printer", channel=inside))
+        self.assertEqual(self.notices(self.follower), [])
+        await self.post(self.say("printer"))
+        self.assertEqual(len(self.notices(self.follower)), 1)
+
+    async def test_clearblocks_unblocks_everything(self):
+        await self.add("printer")
+        ctx = self.context(author=self.follower)
+        await self.cog_.highlight_clearblocks.callback(self.cog_, ctx)
+        self.assertEqual(len(ctx.fails), 1)
+        await self.cog_.highlight_block.callback(self.cog_, ctx, blocks=f"{self.speaker.mention} {self.channel.mention}")
+        await self.cog_.highlight_clearblocks.callback(self.cog_, ctx)
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM highlight_blocks"), 0)
+        await self.post(self.say("printer"))
+        self.assertEqual(len(self.notices(self.follower)), 1)
 
     async def test_block_by_a_name_that_does_not_exist_is_refused(self):
         ctx = self.context(author=self.follower)
         await self.cog_.highlight_block.callback(self.cog_, ctx, blocks="nosuchthing")
         self.assertTrue(ctx.fails)
 
+    async def test_a_hidden_channel_reads_as_not_found(self):
+        secret = FakeChannel(self.guild, "secret-plans")
+        secret.permissions_for = lambda member: FakePermissions() if member is self.follower else member.guild_permissions
+        for named in ("secret-plans", secret.mention, str(secret.id)):
+            ctx = self.context(author=self.follower)
+            await self.cog_.highlight_block.callback(self.cog_, ctx, blocks=named)
+            self.assertEqual(ctx.fails, ["I can't find one of those channels or people."], named)
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM highlight_blocks"), 0)
+
+    async def test_pause_for_a_while_then_resume(self):
+        await self.add("printer")
+        ctx = self.context(author=self.follower)
+        await self.cog_.highlight_pause.callback(self.cog_, ctx, duration="2h")
+        self.assertIn("paused until <t:", ctx.oks[-1])
+        await self.post(self.say("printer"))
+        self.assertEqual(self.notices(self.follower), [])
+        await self.cog_.highlight_resume.callback(self.cog_, ctx)
+        self.assertIn("back on", ctx.oks[-1])
+        await self.post(self.say("printer"))
+        self.assertEqual(len(self.notices(self.follower)), 1)
+        await self.cog_.highlight_resume.callback(self.cog_, ctx)
+        self.assertEqual(ctx.fails, ["Your highlight DMs here aren't paused."])
+
+    async def test_a_pause_that_ran_out_lets_notices_through(self):
+        await self.add("printer")
+        await self.cog_.highlight_pause.callback(self.cog_, self.context(author=self.follower), duration="2h")
+        self.cog_._pauses[(self.guild.id, self.follower.id)] = time.time() - 1
+        await self.post(self.say("printer"))
+        self.assertEqual(len(self.notices(self.follower)), 1)
+
+    async def test_a_pause_with_no_end_lasts_through_a_restart_and_shows(self):
+        await self.add("printer")
+        ctx = self.context(author=self.follower)
+        await self.cog_.highlight_pause.callback(self.cog_, ctx, duration=None)
+        self.assertIn("until you run `/highlight resume`", ctx.oks[-1])
+        fresh = Utilities(self.bot)
+        await fresh._load_highlights()
+        self.assertTrue(fresh._held_back(self.guild.id, self.follower.id, self.say("printer"), time.time()))
+        await self.cog_.highlight.callback(self.cog_, ctx)
+        self.assertTrue(ctx.sent[-1]["content"].startswith("**Paused** until you run"))
+
+    async def test_a_pause_length_that_can_not_be_read_is_refused(self):
+        for text in ("banana", "in 100000 years", "yesterday", "2020-01-01"):
+            ctx = self.context(author=self.follower)
+            await self.cog_.highlight_pause.callback(self.cog_, ctx, duration=text)
+            self.assertEqual(len(ctx.fails), 1, text)
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM highlight_pauses"), 0)
+
+    async def test_import_copies_words_from_another_server(self):
+        other = FakeGuild("Other Place")
+        self.bot.fake_guilds.append(other)
+        rows = [(other.id, self.follower.id, word, 1.0) for word in ("printer", "Filament", "spool")]
+        await self.db.many("INSERT INTO highlight_words VALUES (?, ?, ?, ?)", rows)
+        await self.cog_._load_highlights()
+        await self.add("filament")
+        interaction = types.SimpleNamespace(user=self.follower, guild_id=self.guild.id)
+        choices = await self.cog_._highlight_import_servers(interaction, "oth")
+        self.assertEqual([(c.name, c.value) for c in choices], [("Other Place", str(other.id))])
+        ctx = self.context(author=self.follower)
+        await self.cog_.highlight_import.callback(self.cog_, ctx, server=str(other.id))
+        self.assertIn("Copied 2 words", ctx.oks[-1])
+        words = {row["word"] for row in await self.db.all("SELECT word FROM highlight_words WHERE guild_id = ? AND user_id = ?", (self.guild.id, self.follower.id))}
+        self.assertEqual(words, {"filament", "printer", "spool"})
+        await self.post(self.say("the spool ran out"))
+        self.assertEqual(len(self.notices(self.follower)), 1)
+        await self.cog_.highlight_import.callback(self.cog_, ctx, server="other place")
+        self.assertIn("already follow every word", ctx.fails[-1])
+        for named in (str(self.guild.id), "nowhere"):
+            await self.cog_.highlight_import.callback(self.cog_, ctx, server=named)
+        self.assertEqual(len(ctx.fails), 3)
+
+    async def test_import_stops_at_the_word_limit(self):
+        other = FakeGuild("Other")
+        self.bot.fake_guilds.append(other)
+        await self.db.many("INSERT INTO highlight_words VALUES (?, ?, ?, ?)", [(other.id, self.follower.id, f"word{n}", 1.0) for n in range(5)])
+        await self.db.many("INSERT INTO highlight_words VALUES (?, ?, ?, ?)", [(self.guild.id, self.follower.id, f"here{n}", 1.0) for n in range(utilities.MAX_HIGHLIGHT_WORDS - 2)])
+        await self.cog_._load_highlights()
+        ctx = self.context(author=self.follower)
+        await self.cog_.highlight_import.callback(self.cog_, ctx, server="Other")
+        self.assertIn("Copied 2 words", ctx.oks[-1])
+        self.assertIn("3 more didn't fit", ctx.oks[-1])
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM highlight_words WHERE guild_id = ?", (self.guild.id,)), utilities.MAX_HIGHLIGHT_WORDS)
+
     async def test_one_notice_a_minute_per_channel(self):
         await self.add("printer")
         await self.cog_.on_message(self.say("printer"))
         await self.cog_.on_message(self.say("printer again"))
-        self.assertEqual(len(self.follower.dms), 1)
+        await self.settle()
+        await self.post(self.say("printer once more"))
+        self.assertEqual(len(self.notices(self.follower)), 1)
+
+    async def test_waiting_notices_have_a_ceiling(self):
+        await self.add("printer")
+        await self.add("printer", who=self.admin)
+        with mock.patch.object(utilities, "MAX_PENDING_HIGHLIGHTS", 1):
+            await self.cog_.on_message(self.say("printer"))
+            self.assertEqual(len(self.cog_._pending), 1)
+        await self.settle()
+        self.assertEqual(len(self.notices(self.follower)) + len(self.notices(self.admin)), 1)
 
     async def test_two_words_in_one_message_send_one_dm(self):
         await self.add("printer")
         await self.add("filament")
-        await self.cog_.on_message(self.say("printer filament"))
-        self.assertEqual(len(self.follower.dms), 1)
-        self.assertEqual(self.follower.dms[0]["embed"].title, "filament, printer")
+        await self.post(self.say("printer filament"))
+        self.assertEqual(len(self.notices(self.follower)), 1)
+        self.assertTrue(self.notices(self.follower)[0]["content"].startswith("**filament** and **printer** came up"))
 
-    async def test_running_a_command_does_not_notify(self):
+    async def test_running_a_command_does_not_notify_but_a_line_that_starts_like_one_does(self):
         await self.add("printer")
         await self.bot.settings.save(self.guild.id, "core", {"prefixes": ["."]})
-        await self.cog_.on_message(self.say(".help printer"))
-        self.assertEqual(self.follower.dms, [])
+        await self.post(self.say(".highlight matches printer"))
+        await self.post(self.say(".hl m printer"))
+        self.assertEqual(self.notices(self.follower), [])
+        await self.post(self.say(".3mf files for the printer"))
+        self.assertEqual(len(self.notices(self.follower)), 1)
+
+    async def test_typed_commands_come_down_and_their_answers_do_too(self):
+        ctx = self.context(author=self.follower)
+        ctx.command = self.bot.get_command("highlight add")
+        await self.cog_.cog_before_invoke(ctx)
+        self.assertTrue(ctx.message.deleted)
+        await self.cog_.highlight_add.callback(self.cog_, ctx, word="printer")
+        await self.cog_.highlight.callback(self.cog_, ctx)
+        self.assertEqual(ctx.reply_options[-1].get("delete_after"), 10)
+        self.assertEqual(ctx.sent[-1].get("delete_after"), 10)
+        other = self.context(author=self.follower)
+        other.command = self.bot.get_command("reminder")
+        await self.cog_.cog_before_invoke(other)
+        self.assertFalse(other.message.deleted)
 
     async def test_a_closed_dm_is_not_an_error(self):
         await self.add("printer")
@@ -255,7 +510,8 @@ class HighlightFlowTest(BotTest):
             raise discord.Forbidden(types.SimpleNamespace(status=403, reason="closed"), "Cannot send messages to this user")
 
         self.follower.send = closed
-        await self.cog_.on_message(self.say("printer"))
+        with self.assertNoLogs(utilities.log, level="ERROR"):
+            await self.post(self.say("printer"))
 
     async def test_mentions_and_tiny_words_are_refused(self):
         for word in (self.speaker.mention, "@everyone", "a", "!!!", "x" * 101):
@@ -279,8 +535,8 @@ class HighlightFlowTest(BotTest):
         self.assertIn("printer", ctx.sent[-1]["content"])
         await self.cog_.highlight_remove.callback(self.cog_, ctx, word="PRINTER")
         self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM highlight_words"), 0)
-        await self.cog_.on_message(self.say("printer"))
-        self.assertEqual(self.follower.dms, [])
+        await self.post(self.say("printer"))
+        self.assertEqual(self.notices(self.follower), [])
 
     async def test_clear_only_touches_this_person_in_this_server(self):
         await self.add("printer")
@@ -299,10 +555,41 @@ class HighlightFlowTest(BotTest):
         fresh = Utilities(self.bot)
         await fresh._load_highlights()
         await fresh.on_message(self.say("printer"))
-        self.assertEqual(self.follower.dms, [])
+        while fresh._tasks:
+            await asyncio.gather(*list(fresh._tasks), return_exceptions=True)
+        self.assertEqual(self.notices(self.follower), [])
         await fresh.on_message(self.say("printer", author=self.admin))
-        self.assertEqual(len(self.follower.dms), 1)
+        while fresh._tasks:
+            await asyncio.gather(*list(fresh._tasks), return_exceptions=True)
+        self.assertEqual(len(self.notices(self.follower)), 1)
 
+    async def test_a_pause_that_ran_out_is_cleared_at_start(self):
+        await self.db.run("INSERT INTO highlight_pauses VALUES (?, ?, ?)", (self.guild.id, self.follower.id, time.time() - 5))
+        await self.db.run("INSERT INTO highlight_pauses VALUES (?, ?, NULL)", (self.guild.id, self.admin.id))
+        await self.db.run("INSERT INTO highlight_pauses VALUES (?, ?, ?)", (self.guild.id, self.mod.id, time.time() + 3600))
+        await self.cog_._forget_ended_pauses()
+        rows = await self.db.all("SELECT user_id FROM highlight_pauses ORDER BY user_id")
+        self.assertEqual({row["user_id"] for row in rows}, {self.admin.id, self.mod.id})
+
+
+class HighlightTagLineTest(BotTest):
+    modules = [Utilities, Tags]
+
+    async def test_a_tag_typed_as_chat_does_not_notify(self):
+        self.bot._connection.user = self.me
+        self.guild.default_role.permissions = FakePermissions("view_channel", "read_message_history")
+        utilities_ = self.cog(Utilities)
+        with mock.patch.object(utilities, "HIGHLIGHT_PATIENCE", 0):
+            await utilities_.highlight_add.callback(utilities_, self.context(author=self.member), word="printer")
+            await self.bot.settings.save(self.guild.id, "core", {"prefixes": ["."]})
+            await self.db.run("INSERT INTO tags (guild_id, name, content, created_at, updated_at) VALUES (?, 'printer', 'Read the wiki', 1, 1)", (self.guild.id,))
+            await utilities_.on_message(FakeMessage(self.channel, self.mod, ".printer"))
+            await utilities_.on_message(FakeMessage(self.channel, self.mod, ".nottag printer"))
+            while utilities_._tasks:
+                await asyncio.gather(*list(utilities_._tasks), return_exceptions=True)
+        notices = [dm for dm in self.member.dms if dm.get("embed") is not None]
+        self.assertEqual(len(notices), 1)
+        self.assertIn("nottag", notices[0]["embed"].description)
 
 class ReminderTest(BotTest):
     modules = [Utilities]
@@ -1149,19 +1436,32 @@ class RealLibraryTest(GatewayTest):
         self.assert_no_errors(f"pressing {button.get('label')}")
 
     async def test_a_highlight_reaches_a_real_dm(self):
-        await self.say("!highlight add printer", self.admin_id)
-        before = len(self.calls("POST", "/users/@me/channels"))
-        await self.say("my printer broke", self.member_id)
-        self.assertEqual(len(self.calls("POST", "/users/@me/channels")), before + 1)
-        dm = self.net.posted[-1]
-        self.assertEqual(dm["embeds"][0]["title"], "printer")
-        self.assertIn("my printer broke", dm["embeds"][0]["description"])
-        await self.say("!highlight matches the printers", self.admin_id)
-        await self.say("!highlight", self.admin_id)
-        await self.say(f"!highlight block <@{self.member_id}>", self.admin_id)
-        await self.say(f"!highlight unblock <@{self.member_id}>", self.admin_id)
-        await self.say("!highlight remove printer", self.admin_id)
-        await self.say("!highlight clear", self.admin_id)
+        utilities_ = next(m for m in self.bot.modules if isinstance(m, Utilities))
+
+        async def delivered():
+            while utilities_._tasks:
+                await asyncio.gather(*list(utilities_._tasks), return_exceptions=True)
+            await self.settle()
+
+        with mock.patch.object(utilities, "HIGHLIGHT_PATIENCE", 0):
+            await self.say("!highlight add printer", self.admin_id)
+            self.assertEqual(len(self.calls("POST", "/users/@me/channels")), 1)
+            self.assertIn("come here", next(m for m in self.net.posted if (m.get("content") or "").startswith("Highlight notices"))["content"])
+            await self.say("my printer broke", self.member_id)
+            await delivered()
+            self.assert_no_errors("the notice")
+            dm = self.net.posted[-1]
+            self.assertIn("**printer** came up in", dm["content"])
+            self.assertIn("my **printer** broke", dm["embeds"][0]["description"])
+            button = dm["components"][0]["components"][0]
+            self.assertEqual((button["label"], button["style"]), ("Go to message", 5))
+            self.assertIn(f"/channels/{self.guild_id}/{self.text['id']}/", button["url"])
+        for line in ("!highlight matches the printers", "!highlight", f"!highlight block <@{self.member_id}>", f"!highlight unblock <@{self.member_id}>",
+                     "!highlight clearblocks", "!highlight pause 2h", "!highlight", "!highlight resume", "!hl dnd", "!hl enable", "!highlight import nowhere",
+                     "!highlight remove printer", "!highlight clear"):
+            await self.say(line, self.admin_id)
+        deleted = self.calls("DELETE", "/channels/{channel_id}/messages/{message_id}")
+        self.assertGreaterEqual(len(deleted), 14, "every typed highlight command comes down")
 
     async def test_a_reminder_is_delivered(self):
         await self.say("!reminder in 1 hour stretch your legs", self.member_id)
@@ -1268,7 +1568,7 @@ class RealLibraryTest(GatewayTest):
 
         self.assertLessEqual({"info", "youngest", "oldest", "newusers", "oldusers"}, names("members"))
         self.assertLessEqual({"usage", "today", "global", "uptime", "serverinfo", "dump"}, names("stats"))
-        self.assertLessEqual({"show", "add", "remove", "clear", "matches", "block", "unblock"}, names("highlight"))
+        self.assertLessEqual({"show", "add", "remove", "clear", "matches", "block", "unblock", "clearblocks", "pause", "resume", "import"}, names("highlight"))
         self.assertLessEqual({"remindme", "mine", "cancel", "subscribe", "clear", "repeat", "when"}, names("reminder"))
         self.assertLessEqual({"create", "reroll", "end", "list", "participants"}, names("giveaway"))
         self.assertLessEqual({"charinfo", "permissions", "botpermissions", "invite"}, names("misc"))

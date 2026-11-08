@@ -134,13 +134,17 @@ class PageTest(Case):
 
     async def test_a_highlight_deleted_stops_matching(self):
         utilities = self.cog(Utilities)
+        await self.db.run("INSERT INTO highlight_pauses (guild_id, user_id, until) VALUES (?, ?, NULL)", (self.guild.id, self.you))
         await utilities.on_guild_restored(self.guild.id)
         self.assertIn(self.you, utilities._words[self.guild.id])
+        self.assertIn((self.guild.id, self.you), utilities._pauses)
         client = await self.site()
         response = await client.post("/api/my-data/delete", json={"guild_id": str(self.guild.id), "section": "highlights"})
         self.assertEqual(response.status, 200, await response.text())
         self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM highlight_words WHERE user_id = ?", (self.you,)), 0)
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM highlight_pauses WHERE user_id = ?", (self.you,)), 0)
         self.assertNotIn(self.you, utilities._words[self.guild.id])
+        self.assertNotIn((self.guild.id, self.you), utilities._pauses)
         self.assertIn(self.other, utilities._words[self.guild.id])
 
     async def test_a_deleted_reminder_never_fires(self):

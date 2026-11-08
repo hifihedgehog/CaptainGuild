@@ -27,7 +27,7 @@ from typing import Any, NamedTuple
 from .engine import Answer
 
 MAX_ROUNDS = 8
-MAX_TOKENS = 20000  # the OpenSCAD source and the thinking before it
+MAX_TOKENS = 64000  # the OpenSCAD source and the thinking before it, which at Max effort passed 20,000 tokens on a plain request
 MAX_RENDERS = 4  # renders one answer runs: a first try and three fixes, each up to six and a half minutes
 # Renders run as this account when the bot runs as root, and as nobody when it doesn't exist.
 ACCOUNT = "makemodel"
