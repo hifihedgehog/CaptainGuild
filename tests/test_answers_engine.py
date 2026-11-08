@@ -124,6 +124,18 @@ class RoundsTest(LoopCase):
         self.assertEqual({request["max_tokens"] for request in self.model.requests}, {64000})
         self.assertGreater(engine.MAX_TOKENS, 20000, "Opus 5.5 at Max effort thought past 20,000 tokens on a plain request")
 
+    async def test_a_task_budget_goes_out_every_round_through_the_beta_that_takes_it(self):
+        self.model.reply(self.model.tool("search_wiki", {"query": "nozzle"}), self.model.text("Unscrew it. [S2]"))
+        answer = await self.ask(effort="max", task_budget=40000)
+        self.assertEqual(answer.status, "ok")
+        for request, headers in zip(self.model.requests, self.model.headers):
+            self.assertEqual(request["output_config"], {"effort": "max", "task_budget": {"type": "tokens", "total": 40000}})
+            self.assertIn(engine.TASK_BUDGET_BETA, headers.get("anthropic-beta", ""))
+        self.model.reply(self.model.text("Unscrew it. [S2]"))
+        await self.ask()
+        self.assertEqual(self.model.requests[-1]["output_config"], {"effort": "high"})
+        self.assertNotIn("anthropic-beta", self.model.headers[-1], "an answer with no budget names no beta")
+
     async def test_reads_wait_out_a_long_silent_thought(self):
         timeout = engine.client_timeout()
         self.assertEqual((timeout.read, timeout.connect), (1200.0, 10.0))

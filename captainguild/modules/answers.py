@@ -52,6 +52,13 @@ log = logging.getLogger(__name__)
 
 COMMANDS = ("how_do_i", "brainstorm", "ask", "make_model")
 ROUNDS = {"how_do_i": 8, "brainstorm": 6, "ask": 8, "make_model": modelmaker.MAX_ROUNDS}
+# The tokens one answer is told it has: its thinking, tool calls, tool results and reply together. The model sees the count and wraps
+# up inside it. Measured against a real wiki on Nov. 8, 2026: at Max effort with no budget, /make_model, /brainstorm and /how_do_i each
+# had a round use all 64,000 tokens thinking on one of the models, with nothing sent back, and /brainstorm took over ten minutes on
+# another. With this budget, all 34 runs of those commands finished, at every model and effort tried, the slowest in 271 seconds.
+# /ask finished at Max on each of its models with none, in 338 seconds at most, and the web pages it reads would count against one.
+# Automatic answers run as /how_do_i.
+TASK_BUDGETS = {"make_model": 40000, "brainstorm": 40000, "how_do_i": 40000}
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 BURST_COUNT = 3
 BURST_SECONDS = 60.0
@@ -520,6 +527,7 @@ class Answers(Module):
             self._client(), library, question, system=prompts.joined(*parts), tools=self._tools(command, settings), model=model, effort=effort,
             max_rounds=ROUNDS[command], auto=auto, redirect=command in ("how_do_i", "brainstorm"), handlers=handlers,
             max_tokens=modelmaker.MAX_TOKENS if command == "make_model" else engine.MAX_TOKENS, tool_limits={"render_model": modelmaker.MAX_RENDERS},
+            task_budget=TASK_BUDGETS.get(command),
         )
 
     # ---- limits ----

@@ -36,6 +36,7 @@ READ_SECONDS = 1200.0
 CONNECT_SECONDS = 10.0
 CLIENT_RETRIES = 2
 ANSWER_SECONDS = 25 * 60  # the most one request takes, every round together
+TASK_BUDGET_BETA = "task-budgets-2026-03-13"
 LAST_ROUND_AFTER = 10 * 60  # a round that starts later than this has to answer from what it has
 # Bounds on one answer. A reply can ask for any number of tools at once, and every page read goes back in as input on each later
 # round, so without these one request's cost and time have no limit short of the context window.
@@ -272,8 +273,10 @@ def web_tags(text: str, pages: dict, sources: Sources) -> str:
 
 
 async def final_message(client: Any, **request: Any) -> Any:
-    """One round, streamed, and handed back whole, as the call that doesn't stream would give it."""
-    async with client.messages.stream(**request) as stream:
+    """One round, streamed, and handed back whole, as the call that doesn't stream would give it. A request that names a beta goes
+    to the beta endpoint, the one that takes it."""
+    messages = client.beta.messages if "betas" in request else client.messages
+    async with messages.stream(**request) as stream:
         return await stream.get_final_message()
 
 
@@ -289,13 +292,17 @@ def is_word(text: str, word: str, max_len: int) -> bool:
 
 async def converse(client: Any, library: Library, question: str, *, system: str, tools: list, model: str, effort: str, max_rounds: int,
                    auto: bool = False, redirect: bool = False, handlers: dict[str, Handler] | None = None, max_tokens: int = MAX_TOKENS,
-                   tool_limits: dict[str, int] | None = None) -> Answer:
+                   tool_limits: dict[str, int] | None = None, task_budget: int | None = None) -> Answer:
     """Run one member's request through the model with these tools.
 
     handlers maps a tool the bot runs, other than the two wiki tools, to an async function(args, answer) returning (result, is_error).
     tool_limits caps how often one answer runs a tool, and MAX_TOOL_CALLS caps them all: a call past either gets an error result telling
     the model to answer from what it has. Server tools such as web search run on the service's side. With redirect set, a reply of
-    REDIRECT_WORD has status "redirect", or "skipped" when auto is set."""
+    REDIRECT_WORD has status "redirect", or "skipped" when auto is set.
+
+    task_budget is the tokens the whole answer is told it has, its thinking, tool calls, tool results and reply together. The model
+    sees it count down and wraps up inside it, where max_tokens cuts a round off unseen. The service counts what this answer has
+    used from the history each round sends, so the budget goes out the same every round."""
     handlers = handlers or {}
     tool_limits = tool_limits or {}
     called: Counter = Counter()
@@ -304,6 +311,11 @@ async def converse(client: Any, library: Library, question: str, *, system: str,
     messages: list[dict] = [{"role": "user", "content": question}]
     reply_blocks: list = []  # the text blocks of the final reply, which a paused turn can split
     web_pages: dict[str, tuple[str, str]] = {}  # normalized address -> (address, title) from web search results
+    output_config: dict[str, Any] = {"effort": effort}
+    extra: dict[str, Any] = {}
+    if task_budget:
+        output_config["task_budget"] = {"type": "tokens", "total": task_budget}
+        extra["betas"] = [TASK_BUDGET_BETA]
     started = time.monotonic()
     try:
         async with asyncio.timeout(ANSWER_SECONDS):
@@ -318,8 +330,9 @@ async def converse(client: Any, library: Library, question: str, *, system: str,
                     # On the last round the model has to answer from what it has already read.
                     tool_choice={"type": "none"} if last_round else {"type": "auto"},
                     messages=messages,
-                    output_config={"effort": effort},
+                    output_config=output_config,
                     cache_control={"type": "ephemeral"},
+                    **extra,
                 )
                 answer.rounds = round_number
                 used = {key: getattr(response.usage, key, 0) or 0 for key in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")}

@@ -151,7 +151,8 @@ class HowDoITest(AnswersCase):
         self.assertEqual(card["fields"], [{"name": "Sources", "value": f"[1] [Replacing the Nozzle]({BASE}/en/nozzle)", "inline": False}])
         self.assertEqual(card["footer"]["text"], "Answered from the Sample Wiki. Check the sources before you act on it.")
         first = self.model.requests[0]
-        self.assertEqual((first["model"], first["output_config"], first["max_tokens"], first["stream"]), ("claude-haiku-5-5", {"effort": "high"}, 64000, True))
+        self.assertEqual((first["model"], first["output_config"], first["max_tokens"], first["stream"]),
+                         ("claude-haiku-5-5", {"effort": "high", "task_budget": {"type": "tokens", "total": 40000}}, 64000, True))
         self.assertEqual(first["system"], prompts.fill(prompts.HOW_DO_I, WORDS) + "\n\n" + prompts.fill(prompts.RULES, WORDS))
         self.assertIn("Answer only from the Sample Wiki, which you reach", first["system"])
         self.assertEqual(first["messages"][0], {"role": "user", "content": QUESTION})
@@ -270,12 +271,17 @@ class OtherCommandsTest(AnswersCase):
         await self.slash("brainstorm", idea="A wall bracket for my spool holder")
         self.assertEqual(len(self.model.requests), 6)
         self.assertEqual(self.model.requests[5]["tool_choice"], {"type": "none"})
+        for request, headers in zip(self.model.requests, self.model.headers):
+            self.assertEqual(request["output_config"]["task_budget"], {"type": "tokens", "total": 40000}, "every round tells the model its budget")
+            self.assertIn("task-budgets-2026-03-13", headers["anthropic-beta"])
 
     async def test_ask_searches_the_web_but_not_the_sources_sites(self):
         self.model.reply(self.model.text("Check the shop."))
         await self.slash("ask", question="Which filament holds up best outdoors?")
         first = self.model.requests[0]
         self.assertEqual(first["model"], "claude-sonnet-5-5")
+        self.assertEqual(first["output_config"], {"effort": "high"}, "the web pages /ask reads would count against a budget, and it fits at Max without one")
+        self.assertNotIn("anthropic-beta", self.model.headers[0])
         self.assertEqual(first["system"], prompts.fill(prompts.ASK, WORDS) + "\n\n" + prompts.fill(prompts.RULES, WORDS))
         self.assertEqual(first["tools"][-1], {"type": "web_search_20260209", "name": "web_search", "max_uses": 5, "blocked_domains": ["wiki.example.org"]})
         self.assertEqual(self.last_card()["footer"]["text"], footer("ask"))
@@ -291,6 +297,8 @@ class OtherCommandsTest(AnswersCase):
             await self.slash("make_model", description="A clip that holds the end of a filament spool")
         first = self.model.requests[0]
         self.assertEqual((first["model"], first["output_config"]["effort"], first["max_tokens"]), ("claude-sonnet-5-5", "medium", 64000))
+        self.assertEqual(first["output_config"]["task_budget"], {"type": "tokens", "total": 40000})
+        self.assertIn("task-budgets-2026-03-13", self.model.headers[0]["anthropic-beta"])
         self.assertEqual(first["system"], prompts.fill(prompts.MAKE_MODEL, WORDS) + "\n\n" + prompts.fill(prompts.RULES, WORDS))
         self.assertEqual([tool["name"] for tool in first["tools"]], ["search_wiki", "read_wiki_page", "render_model"])
         self.assertIn("Rendered. Size 40.0 x 20.0 x 5.5 mm", self.model.tool_results(1)[0]["content"])
