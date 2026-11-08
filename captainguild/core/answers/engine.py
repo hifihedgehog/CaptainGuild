@@ -185,6 +185,7 @@ def _wiki_tool(name: str, args: dict, sources: Sources, library: Library) -> tup
 
 
 _TAG_GROUP = re.compile(r"\s*\[(S\d+(?:\s*,\s*S\d+)*)\]")
+_LONE_PUNCTUATION = re.compile(r"(?m)^[ \t]*[,;]+[ \t]*(?:\n|\Z)")
 
 
 def render(text: str, sources: Sources, answer: Answer) -> None:
@@ -215,6 +216,8 @@ def render(text: str, sources: Sources, answer: Answer) -> None:
     rendered = _TAG_GROUP.sub(replace, text)
     # Neighboring sentences from one page would otherwise read "... [1] ... [1] [1]".
     rendered = re.sub(r"(\[\d+\])(?:\s*\1)+", r"\1", rendered)
+    # A citation the model put on a line of its own can leave the comma after it alone on a line, between two list items.
+    rendered = _LONE_PUNCTUATION.sub("", rendered)
     answer.text = rendered.strip()
     for page, sections in cited.items():
         if len(sections) == 1:
@@ -223,6 +226,21 @@ def render(text: str, sources: Sources, answer: Answer) -> None:
         else:
             first_title = next(iter(sections.values()))
             answer.sources.append((first_title.split(" › ", 1)[0], page))
+
+
+def is_service_tool(block: Any) -> bool:
+    """A tool the service runs inside one turn, such as web search: its call or its result."""
+    kind = getattr(block, "type", "")
+    return kind == "server_tool_use" or kind.endswith("_tool_result")
+
+
+def kept_text(content: list, earlier: list) -> list:
+    """The text blocks a reply keeps so far. Words written before a tool call are working notes, whether the bot runs the tool or the
+    service does, so a turn that used one of the service's tools keeps only the words after its last call."""
+    last = max((index for index, block in enumerate(content) if is_service_tool(block)), default=None)
+    if last is None:
+        return earlier + [block for block in content if block.type == "text"]
+    return [block for block in content[last + 1:] if block.type == "text"]
 
 
 def cited_text(blocks: list, sources: Sources) -> str:
@@ -354,7 +372,7 @@ async def converse(client: Any, library: Library, question: str, *, system: str,
                     return answer
                 if response.stop_reason == "pause_turn" and not last_round:
                     # Web search reached its step limit on the service's side. Sending the turn back resumes it.
-                    reply_blocks += [block for block in response.content if block.type == "text"]
+                    reply_blocks = kept_text(response.content, reply_blocks)
                     messages.append({"role": "assistant", "content": response.content})
                     continue
                 tool_uses = [block for block in response.content if block.type == "tool_use"]
@@ -380,7 +398,7 @@ async def converse(client: Any, library: Library, question: str, *, system: str,
                     messages.append({"role": "user", "content": results})
                     continue
 
-                reply_blocks += [block for block in response.content if block.type == "text"]
+                reply_blocks = kept_text(response.content, reply_blocks)
                 text = web_tags(cited_text(reply_blocks, sources), web_pages, sources)
                 if auto and is_word(text, SKIP_WORD, 200):
                     answer.status = "skipped"

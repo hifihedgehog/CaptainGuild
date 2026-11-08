@@ -202,6 +202,24 @@ class WebTest(LoopCase):
         self.assertEqual(answer.sources, [("Printer at the shop", "https://shop.example.com/printer/")])
         self.assertEqual(answer.usage["web_search_requests"], 1)
 
+    async def test_notes_before_a_web_search_arent_the_reply(self):
+        notes = {"type": "text", "text": "Wiki is irrelevant. Results are strings; let me inspect."}
+        self.model.reply(self.model.message([notes, *self.searched([{"type": "text", "text": "It costs $500. [W: https://shop.example.com/printer]"}])["content"]],
+                                            "end_turn", web_searches=1))
+        self.assertEqual((await self.ask()).text, "It costs $500. [1]")
+
+    async def test_notes_between_two_searches_and_across_a_pause_arent_the_reply(self):
+        searched = self.searched([])["content"]
+        self.model.reply(self.model.message([{"type": "text", "text": "Searching. "}, *searched, {"type": "text", "text": "One more. "}], "pause_turn", web_searches=1),
+                         self.model.message([*searched, {"type": "text", "text": "It costs $500."}], "end_turn", web_searches=1))
+        self.assertEqual((await self.ask()).text, "It costs $500.")
+        self.model.reply(self.model.message([*searched, {"type": "text", "text": "It costs "}], "pause_turn", web_searches=1), self.model.text("$500."))
+        self.assertEqual((await self.ask()).text, "It costs $500.", "words after the last search carry across a pause")
+
+    async def test_a_comma_left_alone_on_a_line_goes(self):
+        self.model.reply(self.model.text(chr(10).join(["- First", ",", "- Second", " ; ", "- Third", ","])))
+        self.assertEqual((await self.ask()).text, chr(10).join(["- First", "- Second", "- Third"]))
+
     async def test_a_web_citation_becomes_a_source(self):
         cited = {"type": "text", "text": "It costs $500.", "citations": [{"type": "web_search_result_location", "url": "https://shop.example.com/printer/", "title": "Printer at the shop",
                                                                         "cited_text": "$500", "encrypted_index": "x"}]}
