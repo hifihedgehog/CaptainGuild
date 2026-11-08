@@ -11,7 +11,7 @@ import discord
 
 from captainguild.core.perms import MODULE as COMMANDS_MODULE
 from captainguild.modules.moderation import Moderation
-from captainguild.modules.reports import Reports
+from captainguild.modules.reports import REPORT_ACTIONED_ID, Reports
 from captainguild.modules.voice import (
     ACCESS_APPROVE_ID, ACCESS_DENY_ID, ACCESS_REQUEST_ID, BLOCK, DEAFEN, MUTE, REPORT_DEAFEN_ID, REPORT_DISMISS_ID, REPORT_MUTE_ID, REPORT_REMOVE_ID, VOTE_AGAINST_ID,
     VOTE_FOR_ID, VOTE_VETO_ID, Voice, format_minutes, read_length, split_length,
@@ -107,6 +107,20 @@ class VoiceTest(Harness):
 
     def logged(self, channel: dict) -> list[dict]:
         return [embed for channel_id, embed, _ in self.bot.logs.posted if channel_id == int(channel["id"])]
+
+    async def legacy_report_post(self, target_id: int | None = None, reason: str = "Playing loud music") -> dict:
+        """A VC report post as versions before 1.2.3 made them, with its own buttons and its row in voice_reports."""
+        controls = [{"type": 1, "components": [
+            {"type": 2, "style": 4, "label": "Temp Mute", "custom_id": REPORT_MUTE_ID}, {"type": 2, "style": 4, "label": "Temp Deafen", "custom_id": REPORT_DEAFEN_ID},
+            {"type": 2, "style": 4, "label": "Temp Remove", "custom_id": REPORT_REMOVE_ID}, {"type": 2, "style": 2, "label": "Dismiss Report", "custom_id": REPORT_DISMISS_ID},
+        ]}]
+        post = self.net.message_json(int(self.reports_channel["id"]), {"embeds": [{"title": "Voice Channel Report", "fields": [{"name": "Reason", "value": reason, "inline": False}]}], "components": controls})
+        self.net.messages[int(post["id"])] = post
+        await self.db.run(
+            "INSERT INTO voice_reports (report_message_id, guild_id, channel_id, reporter_id, reporter_name, target_id, target_name, voice_channel_id, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (int(post["id"]), self.guild_id, int(self.reports_channel["id"]), self.mod_id, "mod", target_id or self.member_id, "member", None, reason, time.time()),
+        )
+        return post
 
     def role_calls(self, method: str) -> list[tuple]:
         return self.calls_to(method, "/guilds/{guild_id}/members/{user_id}/roles/{role_id}")
@@ -455,97 +469,204 @@ class ActionsPanelTest(VoiceTest):
 
 
 class VCReportTest(VoiceTest):
+    """VC reports are filed through the reports module: its post in the reports channel, its buttons, its rules and its review thread."""
+    modules = [Voice, Reports]
+
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        self.watch_member_edits()
+        self.reports = self.bot.module("reports")
+        self.veteran_log = self.reports_channel  # the voice setting that held VC reports before 1.2.3 is now the VC veteran log
+        self.queue = self.add_channel("reported-messages")
+        await self.bot.settings.save(self.guild_id, "reports", {"report_channel": int(self.queue["id"]), "forum_channel": int(self.forum["id"]), "moderator_role": int(self.staff_role["id"])})
 
-    async def filed(self, *, by: int | None = None) -> dict:
-        await self.slash("vc_report", by or self.mod_id, user=self.member(self.member_id), reason="Playing loud music")
-        return self.posts_in(self.reports_channel["id"])[-1]
+    async def filed(self, *, by: int | None = None, reason: str = "Playing loud music") -> dict:
+        await self.slash("vc_report", by or self.mod_id, user=self.member(self.member_id), reason=reason)
+        return self.posts_in(self.queue["id"])[-1]
 
-    async def test_a_report_reaches_staff_with_who_is_in_the_channel_and_pings_moderators(self):
+    async def rows(self) -> list[dict]:
+        return await self.db.all("SELECT * FROM reports ORDER BY id")
+
+    def thread_of(self, user_id: int) -> dict:
+        return next(c for c in self.net.channels.values() if "thread_metadata" in c and c["name"].endswith(f"UID {user_id}"))
+
+    async def test_a_report_is_a_voice_report_in_the_reports_channel_naming_who_was_there(self):
         await self.join(self.member_id)
         await self.join(self.admin_id)
         post = await self.filed()
         embed = post["embeds"][0]
-        self.assertEqual(embed["title"], "Voice Channel Report")
-        names = {f["name"]: f["value"] for f in embed["fields"]}
-        self.assertIn(str(self.member_id), names["Reported user"])
-        self.assertIn(str(self.mod_id), names["Reported by"])
-        self.assertEqual(names["Voice channel"], f"<#{self.voice['id']}>")
-        self.assertIn("admin", names["Currently in channel"])
-        self.assertEqual(names["Reason"], "Playing loud music")
-        self.assertEqual(post["content"], f"<@&{self.staff_role['id']}>")
-        self.assertEqual(list(self.buttons(post)), ["Temp Mute", "Temp Deafen", "Temp Remove", "Dismiss Report"])
-        row = await self.db.one("SELECT * FROM voice_reports")
-        self.assertEqual((row["target_id"], row["status"]), (self.member_id, "open"))
-        self.assertIn("went to the moderators", self.last_answer())
+        self.assertEqual(embed["author"]["name"], "Voice Report")
+        text = embed["description"]
+        self.assertIn(f"<@{self.mod_id}> (mod) reported <@{self.member_id}> (member) in voice.", text)
+        self.assertIn("Account created:", text)
+        self.assertIn(f"**Voice channel**\n<#{self.voice['id']}>\nIn the channel: ", text)
+        present = text.split("In the channel: ", 1)[1].split("\n", 1)[0]
+        self.assertEqual(sorted(present.split(", ")), ["admin", "member"])
+        self.assertIn("**Filed in**", text)
+        self.assertIn("Playing loud music", text)
+        self.assertEqual(list(self.buttons(post)), ["Jump to where it was filed", "Actioned", "False Positive", "View Message History"])
+        row = (await self.rows())[-1]
+        self.assertEqual((row["kind"], row["target_id"], row["channel_id"], row["state"]), ("voice", self.member_id, int(self.voice["id"]), "open"))
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM voice_reports"), 0)
+        self.assertEqual(self.posts_in(self.veteran_log["id"]), [], "the VC veteran log holds no reports")
+        answer = [a for a in self.answers() if a.get("embeds")][-1]
+        self.assertTrue(self.is_private(answer))
+        self.assertIn("You reported", answer["embeds"][0]["description"])
         self.assert_no_errors()
 
-    async def test_the_ping_goes_to_the_role_named_here_whatever_else_counts_as_a_moderator(self):
-        for _ in range(64):  # the pair a set would hand back in the wrong order
-            named, other = self.add_role("Named here", 3), self.add_role("Bot manager", 3)
-            if next(iter({int(named["id"]), int(other["id"])})) == int(other["id"]):
-                break
-        await self.configure(moderator_role=int(named["id"]))
-        await self.bot.settings.save(self.guild_id, COMMANDS_MODULE, {"mod_role": int(other["id"])})
-        self.assertEqual((await self.filed())["content"], f"<@&{named['id']}>")
-        await self.configure(moderator_role=None)
-        self.voice_module._cooldowns.clear()
-        self.voice_module._report_pings.clear()
-        self.assertEqual((await self.filed())["content"], f"<@&{other['id']}>", "with none named here, whoever else counts as one")
+    async def test_it_files_in_the_members_review_thread_as_every_report_does(self):
+        await self.join(self.member_id)
+        await self.filed()
+        thread = self.thread_of(self.member_id)
+        posts = self.posts_in(thread["id"])
+        copies = [p for p in posts if p["embeds"] and (p["embeds"][0].get("author") or {}).get("name") == "Voice Report"]
+        self.assertEqual(len(copies), 1)
+        self.assertIn(f"<#{self.voice['id']}>", copies[0]["embeds"][0]["description"])
+        self.assertTrue(any(p["embeds"] and p["embeds"][0].get("title") == "Step 1" for p in posts))
+        self.assertIn(f"<@&{self.staff_role['id']}>", [p["content"] for p in posts])
+        self.assertEqual((await self.rows())[-1]["thread_id"], int(thread["id"]))
         self.assert_no_errors()
 
     async def test_reported_while_not_in_voice_says_so(self):
         post = await self.filed()
-        self.assertEqual({f["name"]: f["value"] for f in post["embeds"][0]["fields"]}["Voice channel"], "Not currently in voice")
+        self.assertIn("**Voice channel**\nNot in voice when reported", post["embeds"][0]["description"])
+        self.assertIsNone((await self.rows())[-1]["channel_id"])
 
-    async def test_a_report_typed_as_text_comes_down_and_leaves_nothing_behind(self):
+    async def test_a_report_typed_as_text_comes_down_and_answers_in_private(self):
         self.dispatch_message(user_id=self.mod_id, content=f"!vc report <@{self.member_id}> shouting")
         await self.settle()
         self.assertTrue(self.calls_to("DELETE", "/channels/{channel_id}/messages/{message_id}"))
-        self.assertEqual(await self.db.scalar("SELECT reason FROM voice_reports"), "shouting")
+        row = (await self.rows())[-1]
+        self.assertEqual((row["kind"], row["reason"]), ("voice", "shouting"))
+        self.assertTrue(self.calls_to("POST", "/users/@me/channels"), "the answer goes to their DMs")
         self.assert_no_errors()
 
-    async def test_self_bots_and_cooldown_are_refused(self):
+    async def test_a_typed_report_missing_its_reason_still_comes_down(self):
+        self.dispatch_message(user_id=self.mod_id, content=f"!vc_report <@{self.member_id}>")
+        await self.settle()
+        self.assertTrue(self.calls_to("DELETE", "/channels/{channel_id}/messages/{message_id}"))
+        self.assertEqual(await self.rows(), [])
+
+    async def test_the_rules_and_the_cooldown_every_report_follows_apply(self):
+        await self.bot.settings.save(self.guild_id, "reports", {"report_self": False, "report_bots": False})
         await self.slash("vc_report", self.member_id, user=self.member(self.member_id), reason="x")
         self.assertIn("yourself", self.last_answer())
         bot_id = self.add_member("musicbot", bot=True)
         await self.slash("vc_report", self.member_id, user=self.member(bot_id), reason="x")
-        self.assertIn("Bots", self.last_answer())
+        self.assertIn("bot", self.last_answer())
         await self.filed()
         await self.slash("vc_report", self.mod_id, user=self.member(self.member_id), reason="again")
-        self.assertIn("too fast", self.last_answer())
-        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM voice_reports"), 1)
+        self.assertIn("Wait", self.last_answer())
+        await self.user_menu("Report User", self.mod_id, self.member_id)
+        self.assertIn("Wait", self.last_answer(), "one cooldown covers every kind of report")
+        self.assertEqual(len(await self.rows()), 1)
 
-    async def test_no_channel_or_a_deleted_one_says_so(self):
-        await self.configure(report_channel=None)
+    async def test_no_reports_channel_says_so_before_any_form(self):
+        await self.bot.settings.save(self.guild_id, "reports", {"report_channel": None})
         await self.slash("vc_report", self.mod_id, user=self.member(self.member_id), reason="x")
         self.assertIn("aren't set up", self.last_answer())
-        await self.configure(report_channel=new_id())
         await self.user_menu("VC Report", self.mod_id, self.member_id)
-        self.assertIn("no longer exists", self.last_answer())
+        self.assertIn("aren't set up", self.last_answer())
         self.assertEqual(self.net.modals, [])
+        self.assertEqual(await self.rows(), [])
 
-    async def test_a_post_discord_refuses_tells_the_reporter(self):
-        restore = self.failing("POST", "/channels/{channel_id}/messages", 403)
-        await self.slash("vc_report", self.mod_id, user=self.member(self.member_id), reason="x")
-        restore()
-        self.assertIn("can't post", self.last_answer())
-        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM voice_reports"), 0)
+    async def test_a_post_discord_refuses_tells_the_reporter_what_to_do(self):
+        for status, expected in ((403, "Tell an admin"), (503, "Try again")):
+            self.reports._cooldowns.clear()
+            restore = self.failing("POST", "/channels/{channel_id}/messages", status)
+            await self.slash("vc_report", self.mod_id, user=self.member(self.member_id), reason="x")
+            restore()
+            self.assertIn(expected, self.last_answer(), status)
+        self.assertEqual(await self.rows(), [])
         self.assert_no_errors()
 
     async def test_the_right_click_menu_takes_a_reason(self):
         await self.user_menu("VC Report", self.mod_id, self.member_id)
         self.assertEqual(self.net.modals[-1]["title"], "Report to voice moderators")
         await self.submit_form(self.mod_id, "Shouting")
-        self.assertEqual(self.posts_in(self.reports_channel["id"])[-1]["embeds"][0]["fields"][-1]["value"], "Shouting")
+        post = self.posts_in(self.queue["id"])[-1]
+        self.assertEqual(post["embeds"][0]["author"]["name"], "Voice Report")
+        self.assertIn("Shouting", post["embeds"][0]["description"])
         await self.user_menu("VC Report", self.mod_id, self.member_id)
-        self.assertIn("too fast", self.last_answer())
+        self.assertIn("Wait", self.last_answer())
 
-    async def test_buttons_act_with_the_default_length_and_note_it_on_the_report(self):
-        await self.join(self.member_id)
+    async def test_each_voice_report_gets_its_own_post(self):
+        await self.user_menu("Report User", self.mod_id, self.member_id)
+        await self.submit_form(self.mod_id, "Rude profile")
+        self.reports._cooldowns.clear()
+        await self.filed()
+        self.reports._cooldowns.clear()
+        await self.filed(reason="Still at it")
+        self.assertEqual([row["kind"] for row in await self.rows()], ["user", "voice", "voice"])
+        self.assertEqual(len([p for p in self.posts_in(self.queue["id"]) if p["embeds"]]), 3)
+
+    async def test_the_reports_banned_role_applies_here_too(self):
+        banned = self.add_role("No Reports", 1)
+        blocked = self.add_member("blocked", banned["id"])
+        await self.bot.settings.save(self.guild_id, "reports", {"banned_role": int(banned["id"])})
+        await self.slash("vc_report", blocked, user=self.member(self.member_id), reason="x")
+        self.assertIn("stops you", self.last_answer())
+        self.assertEqual(await self.rows(), [])
+
+    async def test_staff_handle_it_like_any_report_and_veterans_dont(self):
         post = await self.filed()
+        await self.press(REPORT_ACTIONED_ID, post, self.vet_id)
+        self.assertIn("Only staff", self.last_answer())
+        self.assertEqual((await self.rows())[-1]["state"], "open")
+        await self.press(REPORT_ACTIONED_ID, post, self.staff_id)
+        self.assertEqual((await self.rows())[-1]["state"], "actioned")
+        self.assert_no_errors()
+
+    async def test_voice_moderators_handle_voice_reports_and_no_others(self):
+        voice_mods = self.add_role("Voice Mods", 3)
+        voice_mod = self.add_member("voicemod", voice_mods["id"])
+        await self.configure(moderator_role=int(voice_mods["id"]))
+        post = await self.filed()
+        await self.press(REPORT_ACTIONED_ID, post, voice_mod)
+        self.assertEqual((await self.rows())[-1]["state"], "actioned")
+        self.reports._cooldowns.clear()
+        await self.user_menu("Report User", self.mod_id, self.member_id)
+        await self.submit_form(self.mod_id, "Rude profile")
+        await self.press(REPORT_ACTIONED_ID, self.posts_in(self.queue["id"])[-1], voice_mod)
+        self.assertIn("Only staff", self.last_answer())
+        self.assertEqual((await self.rows())[-1]["state"], "open")
+        self.assert_no_errors()
+
+    async def test_the_longest_possible_voice_report_still_fits(self):
+        await self.join(self.member_id)
+        for number in range(98):
+            self.voice_state(self.add_member(f"{number:02d}" + "n" * 30), self.voice["id"])
+        await self.settle()
+        post = await self.filed(reason="r" * 1000)
+        self.assertLessEqual(len(post["embeds"][0]["description"]), 4096 - 200, "room left for who handled it")
+        await self.press(REPORT_ACTIONED_ID, post, self.staff_id)
+        self.assertLessEqual(len([a for a in self.answers() if a.get("embeds")][-1]["embeds"][0]["description"]), 4096)
+        self.assert_no_errors()
+
+    async def test_the_voice_page_lists_voice_reports_and_older_ones(self):
+        await self.db.run(
+            "INSERT INTO voice_reports (report_message_id, guild_id, channel_id, reporter_id, reporter_name, target_id, target_name, voice_channel_id, reason, created_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (new_id(), self.guild_id, int(self.veteran_log["id"]), self.mod_id, "mod", self.member_id, "member", None, "Older", time.time() - 3600, "handled"),
+        )
+        await self.join(self.member_id)
+        post = await self.filed(reason="Loud")
+        client = await self.client()
+        body = await (await client.get(self.path("/voice/reports"))).json()
+        self.assertEqual(body["total"], 2)
+        self.assertEqual([(row["reason"], row["status"]) for row in body["rows"]], [("Loud", "open"), ("Older", "handled")])
+        self.assertEqual(str(body["rows"][0]["voice_channel_id"]), self.voice["id"])
+        self.assertTrue(body["rows"][0]["url"].endswith(f"/{post['id']}"))
+
+
+class LegacyVCReportTest(VoiceTest):
+    """VC report posts from before 1.2.3 keep their own buttons, and those still answer."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.watch_member_edits()
+
+    async def test_buttons_act_with_the_default_length(self):
+        await self.join(self.member_id)
+        post = await self.legacy_report_post()
         await self.press(REPORT_MUTE_ID, post, self.staff_id)
         self.assertEqual(self.edits_of(self.member_id)[-1]["mute"], True)
         self.assertEqual(await self.actions(self.member_id), {MUTE})
@@ -557,14 +678,14 @@ class VCReportTest(VoiceTest):
 
     async def test_action_taken_is_added_to_the_report(self):
         await self.join(self.member_id)
-        post = await self.filed()
+        post = await self.legacy_report_post()
         await self.press(REPORT_MUTE_ID, post, self.staff_id)
         edited = next(b for m, p, b in reversed(self.net.calls) if "embeds" in b and m == "PATCH")
         self.assertEqual(edited["embeds"][0]["fields"][-1]["name"], "Action taken")
         self.assertIn(f"<@{self.staff_id}>", edited["embeds"][0]["fields"][-1]["value"])
 
     async def test_dismiss_closes_it_and_takes_the_buttons_away(self):
-        post = await self.filed()
+        post = await self.legacy_report_post()
         await self.press(REPORT_DISMISS_ID, post, self.staff_id)
         answer = [a for a in self.answers() if a.get("embeds")][-1]
         self.assertEqual(answer["components"], [])
@@ -573,34 +694,29 @@ class VCReportTest(VoiceTest):
         await self.press(REPORT_MUTE_ID, post, self.staff_id)
         self.assertIn("already been dismissed", self.last_answer())
 
-    async def test_veterans_dont_handle_the_queue(self):
-        post = await self.filed()
+    async def test_veterans_dont_handle_them(self):
+        post = await self.legacy_report_post()
         await self.press(REPORT_DISMISS_ID, post, self.vet_id)
         self.assertIn("Only moderators", self.last_answer())
         self.assertEqual(await self.db.scalar("SELECT status FROM voice_reports"), "open")
 
     async def test_buttons_respect_the_hierarchy_and_a_member_who_left(self):
-        await self.slash("vc_report", self.mod_id, user=self.member(self.admin_id), reason="abuse")
-        post = self.posts_in(self.reports_channel["id"])[-1]
+        post = await self.legacy_report_post(self.admin_id)
         await self.press(REPORT_MUTE_ID, post, self.staff_id)
         self.assertIn("above yours", self.last_answer())
-        self.voice_module._cooldowns.clear()
-        await self.slash("vc_report", self.mod_id, user=self.member(self.member_id), reason="abuse")
-        post = self.posts_in(self.reports_channel["id"])[-1]
+        post = await self.legacy_report_post()
         self.state.parse_guild_member_remove({"guild_id": str(self.guild_id), "user": self.member_json[self.member_id]["user"]})
         self.net.members.pop(self.member_id)
         await self.press(REPORT_MUTE_ID, post, self.staff_id)
         self.assertIn("no longer in the server", self.last_answer())
         self.assert_no_errors()
 
-    async def test_the_reports_banned_role_applies_here_too(self):
-        banned = self.add_role("No Reports", 1)
-        blocked = self.add_member("blocked", banned["id"])
-        fake_reports = mock.Mock(key="reports")
-        fake_reports.cfg.return_value = {"banned_role": int(banned["id"]), "moderator_role": None}
-        self.bot.modules.append(fake_reports)
-        await self.slash("vc_report", blocked, user=self.member(self.member_id), reason="x")
-        self.assertIn("stops you", self.last_answer())
+    async def test_vc_report_without_the_reports_module_says_so(self):
+        await self.slash("vc_report", self.mod_id, user=self.member(self.member_id), reason="x")
+        self.assertIn("aren't available", self.last_answer())
+        await self.user_menu("VC Report", self.mod_id, self.member_id)
+        self.assertIn("aren't available", self.last_answer())
+        self.assertEqual(self.net.modals, [])
 
 
 class AccessTest(VoiceTest):
@@ -625,7 +741,6 @@ class AccessTest(VoiceTest):
 
     async def test_the_button_is_posted_with_the_requirements(self):
         await self.slash("vc", self.admin_id, "button")
-        post = self.net.posted[-2] if not self.net.posted[-1].get("embeds") else self.net.posted[-1]
         posts = [m for m in self.posts_in(self.text["id"]) if m["embeds"]]
         self.assertIn("**2 messages**", posts[-1]["embeds"][0]["description"])
         self.assertIn("**7 days**", posts[-1]["embeds"][0]["description"])
@@ -1392,13 +1507,6 @@ class DashboardTest(VoiceTest):
         self.assertEqual(len(self.role_calls("DELETE")), 1)
         self.assertIsNone(await self.db.one("SELECT * FROM mini_mutes"))
         self.assertEqual((await self.bot.activity_log.recent(self.guild_id))[0]["action"], "voice.minimute.lift")
-
-    async def test_vc_reports_list(self):
-        await self.slash("vc_report", self.mod_id, user=self.member(self.member_id), reason="Loud")
-        client = await self.client()
-        body = await (await client.get(self.path("/voice/reports"))).json()
-        self.assertEqual(body["total"], 1)
-        self.assertEqual((body["rows"][0]["target_name"], body["rows"][0]["reason"], body["rows"][0]["status"]), ("member", "Loud", "open"))
 
     async def test_post_button_from_the_dashboard_answers_after_a_restart(self):
         client = await self.client()

@@ -119,12 +119,21 @@ class StaffTargetTest(VoiceTest):
 
 
 class VeteranLogTest(VoiceTest):
-    async def test_a_veteran_action_with_nowhere_to_log_is_refused(self):
+    async def test_a_veteran_acts_with_no_log_set_and_nothing_is_posted(self):
         await self.configure(report_channel=None)
         await self.join(self.member_id)
         await self.slash("vc_mute", self.vet_id, user=self.member(self.member_id))
-        self.assertIn("veteran actions are off", self.last_answer())
-        self.assertEqual(await self.actions(self.member_id), set())
+        self.assertEqual(await self.actions(self.member_id), {MUTE})
+        self.assertEqual(self.bot.logs.posted, [])
+        self.assertIn("Server-muted", self.last_answer())
+
+    async def test_a_veteran_action_goes_to_the_log_when_one_is_set(self):
+        await self.join(self.member_id)
+        await self.slash("vc_mute", self.vet_id, user=self.member(self.member_id))
+        logged = self.logged(self.reports_channel)
+        self.assertEqual(len(logged), 1)
+        self.assertEqual(logged[0]["title"], "VC Veteran Action")
+        self.assertIn(str(self.vet_id), logged[0]["fields"][0]["value"])
 
     async def test_a_moderator_doesnt_need_it(self):
         await self.configure(report_channel=None)
@@ -133,36 +142,12 @@ class VeteranLogTest(VoiceTest):
         self.assertEqual(await self.actions(self.member_id), {MUTE})
 
 
-class ReportNoiseTest(VoiceTest):
-    def pings(self) -> list[str | None]:
-        return [post.get("content") for post in self.posts_in(self.reports_channel["id"])]
-
-    async def report(self, reporter: int, target: int) -> None:
-        self.voice_module._cooldowns.clear()
-        await self.slash("vc_report", reporter, user=self.member(target), reason="shouting")
-
-    async def test_one_ping_per_person_reported_per_ten_minutes(self):
-        await self.report(self.vet_id, self.member_id)
-        await self.report(self.server_vet_id, self.member_id)
-        self.assertEqual(self.pings()[0], f"<@&{self.staff_role['id']}>")
-        self.assertFalse(self.pings()[1])
-        self.assertEqual(len(self.pings()), 2)
-
-    async def test_another_person_reported_pings_on_their_own(self):
-        await self.report(self.vet_id, self.member_id)
-        await self.report(self.vet_id, self.server_vet_two)
-        self.assertEqual(self.pings()[1], f"<@&{self.staff_role['id']}>")
-
-    async def test_the_window_ends(self):
-        await self.report(self.vet_id, self.member_id)
-        self.voice_module._report_pings[(self.guild_id, self.member_id)] = time.monotonic() - 1
-        await self.report(self.server_vet_id, self.member_id)
-        self.assertEqual(self.pings()[1], f"<@&{self.staff_role['id']}>")
+class LegacyReportTest(VoiceTest):
+    """Posts from before 1.2.3, whose own buttons still answer."""
 
     async def test_an_action_marks_the_report_handled_and_keeps_the_buttons(self):
         await self.join(self.member_id)
-        await self.report(self.vet_id, self.member_id)
-        post = self.posts_in(self.reports_channel["id"])[-1]
+        post = await self.legacy_report_post()
         await self.press(REPORT_MUTE_ID, post, self.staff_id)
         row = await self.db.one("SELECT status, handled_by_name FROM voice_reports")
         self.assertEqual(row["status"], "acted")
@@ -172,8 +157,7 @@ class ReportNoiseTest(VoiceTest):
         self.assert_no_errors()
 
     async def test_a_gap_in_the_cache_doesnt_read_as_gone(self):
-        await self.report(self.vet_id, self.member_id)
-        post = self.posts_in(self.reports_channel["id"])[-1]
+        post = await self.legacy_report_post()
         cached = self.guild._members.pop(self.member_id)
         await self.press(REPORT_MUTE_ID, post, self.staff_id)
         self.guild._members[self.member_id] = cached
@@ -194,8 +178,8 @@ class ReasonColumnTest(VoiceTest):
 
     async def test_a_report_action_carries_the_reports_reason(self):
         await self.join(self.member_id)
-        await self.slash("vc_report", self.vet_id, user=self.member(self.member_id), reason="shouting")
-        await self.press(REPORT_MUTE_ID, self.posts_in(self.reports_channel["id"])[-1], self.staff_id)
+        post = await self.legacy_report_post(reason="shouting")
+        await self.press(REPORT_MUTE_ID, post, self.staff_id)
         self.assertEqual(await self.db.scalar("SELECT reason FROM voice_actions"), "shouting")
 
 

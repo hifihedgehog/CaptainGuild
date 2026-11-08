@@ -6,9 +6,12 @@ moment they reconnect. A rejoin block disconnects the member from any voice chan
 channel doesn't get around it.
 
 VC veterans are trusted members who act as moderators for voice alone. They can use the temporary actions, but not on staff, bots or
-each other. They are capped at the server's default duration, every action they take is logged to the VC report channel, they may
-approve access requests but never deny them, they may grant access outright with that logged too, unless a moderator closed that person's
-access, and they don't handle the report queue. With nowhere to log to, veterans can't act.
+each other. They are capped at the server's default duration, every action they take is posted to the VC veteran log when the server
+set one (the report_channel setting, named for what it held before 1.2.3), they may approve access requests but never deny them, they
+may grant access outright with that logged too, unless a moderator closed that person's access, and they don't handle reports.
+
+VC reports, from /vc_report and the VC Report menu, are filed through the reports module like any other report: the same post in the
+reports channel, the same buttons, and the same review thread. Posts from before 1.2.3 keep their own buttons, which still answer.
 
 Voice access is a role members ask for with a button. The bot screens each request against message and day requirements and sends only
 qualifying ones to staff, for a one-time approval that lasts until revoked and comes back if the member leaves and returns.
@@ -43,6 +46,7 @@ from ..core.module import Module, staff_only
 from ..core.ops import MessageGone, OpsError
 from ..core.perms import MODULE as COMMANDS_MODULE
 from ..core.perms import role_is_safe
+from ..core.usage import plain_error
 from ..core.validate import Field, Schema, boolean, integer, optional, snowflake, whole_number
 from ..web.api import ApiError
 
@@ -50,12 +54,10 @@ log = logging.getLogger(__name__)
 
 MUTE, DEAFEN, BLOCK = "mute", "deafen", "block"
 MAX_MINUTES = 10080
-REPORT_COOLDOWN = 30.0
 PAGE_MAX = 100
 FLUSH_SECONDS = 30
 EXPIRED_ROW_DAYS = 180
 RETRY_SECONDS = 60  # how soon a mute that wouldn't come off is tried again
-REPORT_PING_SECONDS = 600  # a person reported again inside this stretch gets a post without the ping
 REQUEST_CLAIM_SECONDS = 60  # a request with no post yet may still be posting. After this long, it never will.
 LARGEST_PAGE = 10 ** 7
 STAFF_PERMISSIONS = ("ban_members", "kick_members", "moderate_members", "mute_members", "move_members")
@@ -114,6 +116,16 @@ def split_length(duration: str | None, reason: str | None) -> tuple[int | None, 
 def audit_text(text: str) -> str:
     """Discord cuts audit log reasons off at 512 characters."""
     return text if len(text) <= 512 else text[:509] + "..."
+
+
+async def _delete_typed(ctx: commands.Context) -> None:
+    """Take down a typed report, which names the person it accuses. A slash command leaves nothing to take down."""
+    if ctx.interaction is not None or ctx.message is None:
+        return
+    try:
+        await ctx.message.delete()
+    except discord.HTTPException:
+        pass
 
 
 def vote_embed(target_id: int, initiator_id: int, reason: str | None, minutes: int, required: int, approvals: int, rejections: int, expires_at: float, status: str = "open") -> discord.Embed:
@@ -367,8 +379,6 @@ class Voice(Module):
         self._own_removals: dict[tuple[int, int], float] = {}  # who the bot just took a mini mute role off, so the listener doesn't take it for someone else's doing
         self._pending_counts: Counter = Counter()  # messages counted since the last write, so a busy server doesn't write per message
         self._active: set[tuple[int, int]] = set()  # who has a voice action row, so ordinary voice traffic costs no query
-        self._cooldowns: dict[tuple[int, int], float] = {}
-        self._report_pings: dict[tuple[int, int], float] = {}  # who was reported, and until when another report on them goes without the ping
         self._rejoined: set[tuple[int, int]] = set()  # who came back with a mute or deafen still running, until their next connect
         self._before_restore: dict[int, tuple[list[dict], list[dict]]] = {}
         self._audit_wait = 3.0  # Discord can send a role change a moment before its audit log entry
@@ -624,9 +634,6 @@ class Voice(Module):
             return self._hierarchy_refusal(actor, target)
         if not self.is_vc_veteran(actor):
             return "Only moderators and VC veterans can do that."
-        channel_id = self.cfg(actor.guild.id)["report_channel"]
-        if not channel_id or actor.guild.get_channel(channel_id) is None:  # every veteran action is logged, so with nowhere to log it doesn't happen
-            return "This server hasn't set a VC report channel, so veteran actions are off. Tell an admin."
         return self._veteran_refusal(target)
 
     async def perform(self, actor: Any, target: Any, action: str, minutes: int | None, audit: str, *, reason: str | None = None, default_if_none: bool = True) -> tuple[bool, str]:
@@ -649,7 +656,7 @@ class Voice(Module):
         return ok, text + note if ok else text
 
     def _log_veteran_action(self, actor: Any, target: Any, text: str) -> None:
-        """Every action a VC veteran takes lands in the staff channel, so the team can spot abuse of the trust."""
+        """Every action a VC veteran takes goes to the VC veteran log, so the team can spot abuse of the trust. With no log set, nothing is posted and the action stands."""
         embed = discord.Embed(title="VC Veteran Action", description=text, color=discord.Color.gold(), timestamp=discord.utils.utcnow())
         embed.add_field(name="Veteran", value=f"{actor.mention} (`{actor.id}`)", inline=True)
         embed.add_field(name="Target", value=f"{target.mention} (`{target.id}`)", inline=True)
@@ -754,25 +761,28 @@ class Voice(Module):
     @commands.guild_only()
     @app_commands.describe(user="The person you are reporting", reason="What happened")
     async def vc_report(self, ctx: commands.Context, user: discord.Member, *, reason: str) -> None:
-        # A report typed as text comes down at once, and its answers don't stay in the channel, so it's as private as the other ways.
-        short_lived = {"delete_after": 10} if ctx.interaction is None else {}
-        if ctx.interaction is None:
-            try:
-                await ctx.message.delete()
-            except discord.HTTPException:
-                pass
-        refusal = self._report_refusal(ctx.author, user)
+        reports = self.bot.module("reports")
+        if reports is None:  # every full copy of the bot loads it
+            await _delete_typed(ctx)
+            await ctx.fail("Reports aren't available on this bot.", **({"delete_after": 10} if ctx.interaction is None else {}))
+            return
+        if ctx.interaction is None:  # typed in the open, so it comes down at once and the answer is private, as with /report
+            await reports.typed_voice_report(ctx, user, reason)
+            return
+        refusal = reports.voice_refusal(ctx.author, user)
         if refusal:
-            await ctx.fail(refusal, **short_lived)
+            await ctx.fail(refusal)
             return
-        left = self._cooldown_left(ctx.author)
-        if left:
-            await ctx.fail(f"You're doing that too fast. Try again in {int(left) + 1} seconds.", **short_lived)
+        await reports.submit_voice_report(ctx.interaction, user, reason)
+
+    @vc_report.error
+    async def _vc_report_refused(self, ctx: commands.Context, error: Exception) -> None:
+        """A typed report that fails before the command's body would stay up in public, naming the person it accuses."""
+        if ctx.interaction is not None or not isinstance(error, (commands.CheckFailure, commands.UserInputError, commands.CommandOnCooldown, commands.DisabledCommand)):
             return
-        self._start_cooldown(ctx.author)
-        await ctx.defer(ephemeral=True)
-        answer = await self.submit_report(ctx.author, user, reason)
-        await ctx.send(answer, ephemeral=True, allowed_mentions=discord.AllowedMentions.none(), **short_lived)
+        ctx.error_answered = True
+        await _delete_typed(ctx)
+        await ctx.fail(plain_error(ctx, error), delete_after=10)
 
     @commands.hybrid_command(name="vc_mute", description="Server-mute someone for a while")
     @commands.guild_only()
@@ -993,108 +1003,20 @@ class Voice(Module):
 
     # ---- VC reports ----
 
-    def _cooldown_left(self, member: Any) -> float:
-        return max(0.0, self._cooldowns.get((member.guild.id, member.id), 0.0) - time.monotonic())
-
-    def _start_cooldown(self, member: Any) -> None:
-        now = time.monotonic()
-        if len(self._cooldowns) > 5000:
-            self._cooldowns = {key: ready for key, ready in self._cooldowns.items() if ready > now}
-        self._cooldowns[(member.guild.id, member.id)] = now + REPORT_COOLDOWN
-
-    def _report_refusal(self, reporter: Any, target: Any) -> str | None:
-        if target.id == reporter.id:
-            return "You can't report yourself."
-        if target.bot:
-            return "Bots can't be reported."
-        reports = self.bot.module("reports")
-        banned = reports.cfg(reporter.guild.id)["banned_role"] if reports is not None else None
-        if banned and any(role.id == banned for role in reporter.roles):
-            return "You have a role that stops you from filing reports."
-        channel_id = self.cfg(reporter.guild.id)["report_channel"]
-        if not channel_id:
-            return "VC reports aren't set up on this server yet. Tell an admin."
-        if reporter.guild.get_channel(channel_id) is None:
-            return "The VC report channel no longer exists. Tell an admin."
-        return None
-
-    async def submit_report(self, reporter: Any, target: Any, reason: str) -> str:
-        """Post a VC report for staff. Shared by the command and the menu. Returns the reply for the person reporting."""
-        guild = reporter.guild
-        cfg = self.cfg(guild.id)
-        channel = guild.get_channel(cfg["report_channel"]) if cfg["report_channel"] else None
-        if channel is None:
-            return "The VC report channel no longer exists. Tell an admin."
-        voice = target.voice.channel if target.voice else None
-        embed = discord.Embed(title="Voice Channel Report", color=discord.Color.orange(), timestamp=discord.utils.utcnow())
-        embed.add_field(name="Reported user", value=f"{target.mention} (`{target.id}`)", inline=True)
-        embed.add_field(name="Reported by", value=f"{reporter.mention} (`{reporter.id}`)", inline=True)
-        embed.add_field(name="Voice channel", value=voice.mention if voice else "Not currently in voice", inline=False)
-        if voice:
-            others = ", ".join(discord.utils.escape_markdown(m.display_name) for m in voice.members if not m.bot)
-            if others:
-                embed.add_field(name="Currently in channel", value=others[:1024], inline=False)
-        embed.add_field(name="Reason", value=reason[:1024], inline=False)
-        # Staff hear about a person once in a stretch, however many people report them, and each report still gets its post.
-        quiet = self._report_pings.get((guild.id, target.id), 0.0) > time.monotonic()
-        role = None if quiet else self._ping_role(guild)
-        try:
-            posted = await channel.send(
-                content=role.mention if role else None, embed=embed, view=component_view({}, self._report_controls()),
-                allowed_mentions=discord.AllowedMentions(roles=[role], users=False, everyone=False) if role else discord.AllowedMentions.none(),
-            )
-        except discord.HTTPException as error:
-            log.warning("Could not post a VC report in %s: %s", channel.id, error)
-            if isinstance(error, discord.Forbidden):
-                return "I can't post in the VC report channel. Tell an admin."
-            return f"Discord refused the report: {error.text or error.status}. Try again."
-        if role is not None:
-            self._start_report_ping(guild.id, target.id)
-        await self.db.run(
-            "INSERT INTO voice_reports (report_message_id, guild_id, channel_id, reporter_id, reporter_name, target_id, target_name, voice_channel_id, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (posted.id, guild.id, channel.id, reporter.id, str(reporter), target.id, str(target), voice.id if voice else None, reason, time.time()),
-        )
-        return "Your report went to the moderators."
-
-    def _start_report_ping(self, guild_id: int, target_id: int) -> None:
-        now = time.monotonic()
-        if len(self._report_pings) > 5000:
-            self._report_pings = {key: until for key, until in self._report_pings.items() if until > now}
-        self._report_pings[(guild_id, target_id)] = now + REPORT_PING_SECONDS
-
-    def _ping_role(self, guild: Any) -> Any:
-        """Who a VC report pings: the moderator role named on this page first, then the others that count as moderators, always in this order."""
-        reports = self.bot.module("reports")
-        named = [self.cfg(guild.id)["moderator_role"], reports.cfg(guild.id)["moderator_role"] if reports is not None else None, self.bot.settings.get(guild.id, COMMANDS_MODULE).get("mod_role")]
-        return next((role for role in (guild.get_role(role_id) for role_id in named if role_id) if role is not None), None)
-
-    @staticmethod
-    def _report_controls() -> list[dict]:
-        return [
-            {"type": "button", "custom_id": REPORT_MUTE_ID, "label": "Temp Mute", "style": "danger"},
-            {"type": "button", "custom_id": REPORT_DEAFEN_ID, "label": "Temp Deafen", "style": "danger"},
-            {"type": "button", "custom_id": REPORT_REMOVE_ID, "label": "Temp Remove", "style": "danger"},
-            {"type": "button", "custom_id": REPORT_DISMISS_ID, "label": "Dismiss Report", "style": "secondary"},
-        ]
-
     @app_commands.guild_only()
     async def menu_report(self, interaction: discord.Interaction, member: discord.Member) -> None:
-        refusal = self._report_refusal(interaction.user, member)
+        reports = self.bot.module("reports")
+        refusal = "Reports aren't available on this bot." if reports is None else reports.voice_refusal(interaction.user, member)
         if refusal:
             await interaction.response.send_message(refusal, ephemeral=True)
             return
-        left = self._cooldown_left(interaction.user)
-        if left:
-            await interaction.response.send_message(f"You're doing that too fast. Try again in {int(left) + 1} seconds.", ephemeral=True)
-            return
 
         async def submit(answer: discord.Interaction, reason: str) -> None:
-            self._start_cooldown(answer.user)
-            await answer.response.defer(ephemeral=True)
-            await answer.followup.send(await self.submit_report(answer.user, member, reason), ephemeral=True)
+            await reports.submit_voice_report(answer, member, reason)
         await interaction.response.send_modal(Form("Report to voice moderators", "What happened?", "Describe what this person is doing in voice", required=True, submit=submit))
 
     async def press_report(self, interaction: discord.Interaction, action: str) -> None:
+        """The buttons on VC report posts from before 1.2.3. Newer VC reports are ordinary reports, with the reports module's buttons."""
         if not self.is_moderator(interaction.user):
             await interaction.response.send_message("Only moderators can act on VC reports.", ephemeral=True)
             return
@@ -2015,11 +1937,23 @@ class Voice(Module):
         return {"ok": True, "released": released}
 
     async def api_reports(self, req: Any) -> dict:
+        """VC reports, newest first: those filed as reports, and the older ones from before 1.2.3 with their own buttons."""
         page, size = self._page_args(req)
-        total = await self.db.scalar("SELECT COUNT(*) FROM voice_reports WHERE guild_id = ?", (req.guild_id,))
-        rows = await self.db.all("SELECT * FROM voice_reports WHERE guild_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", (req.guild_id, size, (page - 1) * size))
+        older = (
+            "SELECT channel_id AS post_channel_id, report_message_id AS post_message_id, reporter_id, reporter_name, target_id, target_name, voice_channel_id, reason, created_at, "
+            "status, NULL AS number FROM voice_reports WHERE guild_id = ?"
+        )
+        listed, args = older, [req.guild_id]
+        if self.bot.module("reports") is not None:  # its table, which a copy without it doesn't have
+            listed = (
+                "SELECT post_channel_id, post_message_id, reporter_id, reporter_name, target_id, target_name, channel_id AS voice_channel_id, reason, created_at, state AS status, number "
+                f"FROM reports WHERE guild_id = ? AND kind = 'voice' UNION ALL {older}"
+            )
+            args.insert(0, req.guild_id)
+        total = await self.db.scalar(f"SELECT COUNT(*) FROM ({listed})", args)
+        rows = await self.db.all(f"SELECT * FROM ({listed}) ORDER BY created_at DESC LIMIT ? OFFSET ?", [*args, size, (page - 1) * size])
         for row in rows:
-            row["url"] = f"https://discord.com/channels/{req.guild_id}/{row['channel_id']}/{row['report_message_id']}" if row["channel_id"] else None
+            row["url"] = f"https://discord.com/channels/{req.guild_id}/{row['post_channel_id']}/{row['post_message_id']}" if row["post_channel_id"] and row["post_message_id"] else None
         return {"rows": rows, "total": total, "page": page, "size": size}
 
     async def api_post_button(self, req: Any) -> dict:
@@ -2050,10 +1984,6 @@ class Voice(Module):
         await self.db.run(
             "INSERT INTO mini_mutes (guild_id, user_id, user_name, expires_at, applied_by, applied_by_name, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (guild_id, member["id"], member["name"], now + 300, admin["id"], admin["name"], "Spamming the same joke"),
-        )
-        await self.db.run(
-            "INSERT INTO voice_reports (report_message_id, guild_id, channel_id, reporter_id, reporter_name, target_id, target_name, voice_channel_id, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (900000000000500001, guild_id, channels["mod-chat"], admin["id"], admin["name"], member["id"], member["name"], channels["Lounge"], "Playing loud music into the channel", now - 1200),
         )
         await self.db.run(
             "INSERT INTO mini_mute_votes (vote_message_id, guild_id, channel_id, target_id, target_name, initiator_id, initiator_name, reason, minutes, required, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",

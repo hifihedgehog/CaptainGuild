@@ -98,14 +98,6 @@ class RemedyFitsItsCauseTest(BotTest):
             self.assertNotIn(unexpected, said)
 
 
-    async def test_a_vc_report_discord_was_down_for_names_no_permission(self):
-        cog = self.cog(Voice)
-        await self.bot.settings.save(self.guild.id, "voice", {"report_channel": self.channel.id})
-        for error, expected in ((refused(503, "down"), "Try again"), (refused(403, "Missing Access"), "Tell an admin")):
-            with mock.patch.object(self.channel, "send", raising(error)):
-                said = await cog.submit_report(self.admin, FakeMember(self.guild, "someone"), "shouting")
-            self.assertIn(expected, said)
-
     async def test_the_voice_access_role_refusal_fits_its_cause(self):
         self.assertIn("Check Manage Roles", Voice._role_refusal(refused(403, "Missing Permissions")))
         said = Voice._role_refusal(refused(503, "down"))

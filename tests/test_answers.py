@@ -788,7 +788,7 @@ class UpdatesTest(AnswersCase):
         await self.drain()
         self.assertEqual(len(self.web.called(SITEMAP)), 1, "a copy made moments ago isn't due")
         self.assertGreater((await self.bot.timers.get_key(pack.REFRESH_KIND, "all"))["due_at"], now + pack.REFRESH_CHECK_SECONDS - 60)
-        await self.answers.refresh_due_sources(now=now + 25 * 3600)
+        await self.answers.refresh_due_sources(now=now + 24 * 3600)  # exactly one day on, at any hour. 25 hours from 23:00 UTC lands two days on and clears today's row too
         self.assertEqual(len(self.web.called(BASE + "/en/nozzle")), 2, "a day later it is, and only the changed page comes down")
         self.assertEqual(len(self.web.called(BASE + "/en/plate")), 1)
         self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM answer_uses"), 1)

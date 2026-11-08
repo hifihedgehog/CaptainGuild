@@ -460,6 +460,7 @@ class Draft:
     file_limit: int = 0
     known: bool = True  # someone never seen in this server gets a post but no ping and no thread, since /report takes any ID
     earlier: tuple[int, int] = (0, 0)  # earlier reports on this person, and how many of those are open
+    in_voice: list[str] = field(default_factory=list)  # a voice report's names of everyone in the channel when it was filed
 
 
 class _NoOneNamed:
@@ -479,6 +480,8 @@ class _NoOneNamed:
 
 NO_ONE_NAMED = _NoOneNamed()
 PLACE = "place"  # a report's kind when it names no one and points at a channel
+VOICE = "voice"  # a report on someone in voice, from /vc_report or the VC Report menu. Its channel_id is the voice channel they were in.
+VOICE_NAMES_MAX = 1000  # who else was in that voice channel. A voice report has no message content, so this fits where content would.
 
 
 class ReportFailed(Exception):
@@ -562,6 +565,8 @@ def report_text(draft: Draft) -> tuple[str, str | None]:
         return "\n\n".join(parts), whole
     if draft.kind == "message":
         lead = f"{reporter.mention} ({_name(reporter)}) reported [this message]({draft.jump_url}) from {target.mention} ({_name(target)})."
+    elif draft.kind == VOICE:
+        lead = f"{reporter.mention} ({_name(reporter)}) reported {target.mention} ({_name(target)}) in voice."
     else:
         lead = f"{reporter.mention} ({_name(reporter)}) reported {target.mention} ({_name(target)})."
     parts = [
@@ -582,8 +587,11 @@ def report_text(draft: Draft) -> tuple[str, str | None]:
             f"Reactions: `{draft.reaction_count}`\n"
             f"Content: {_code(draft.content, REPORT_CONTENT_MAX)}"
         )
-    elif draft.filed_in:
-        parts.append(f"**Filed in**\n<#{draft.filed_in}>")
+    else:
+        if draft.kind == VOICE:
+            parts.append(voice_text(draft))
+        if draft.filed_in:
+            parts.append(f"**Filed in**\n<#{draft.filed_in}>")
     parts.append(f"**Reason**\n{_code(draft.reason, REPORT_REASON_MAX)}")
     copied = [e for e in draft.evidence if e.data is not None]
     missed = [e for e in draft.evidence if e.data is None]
@@ -595,10 +603,22 @@ def report_text(draft: Draft) -> tuple[str, str | None]:
     cut = len(draft.content) > REPORT_CONTENT_MAX or len(draft.reason) > REPORT_REASON_MAX
     if not cut:
         return body, None
+    if draft.kind == VOICE:
+        return body, f"{reporter} reported {target} ({target.id}) in voice\n\nVoice channel ID: {draft.channel_id or 'none'}\n\nReason:\n{draft.reason}\n"
     return body, (
         f"{reporter} reported {target} ({target.id})\n\nMessage ID: {draft.message_id}\nChannel ID: {draft.channel_id}\n\n"
         f"Content:\n{draft.content}\n\nReason:\n{draft.reason}\n"
     )
+
+
+def voice_text(draft: Draft) -> str:
+    """Where a voice report's target was and who was there with them. Both are gone a minute later, so the post keeps them."""
+    if not draft.channel_id:
+        return "**Voice channel**\nNot in voice when reported"
+    text = f"**Voice channel**\n<#{draft.channel_id}>"
+    if draft.in_voice:
+        text += "\nIn the channel: " + _fit(", ".join(draft.in_voice), VOICE_NAMES_MAX)
+    return text
 
 
 def state_line(row: dict) -> str | None:
@@ -647,7 +667,7 @@ def full_report_text(row: dict) -> str:
 
 
 def report_title(row: dict) -> str:
-    return {"message": "Message Report", PLACE: "Report"}.get(row["kind"], "Member Report")
+    return {"message": "Message Report", PLACE: "Report", VOICE: "Voice Report"}.get(row["kind"], "Member Report")
 
 
 def jump_label(row: dict) -> str:
@@ -1201,6 +1221,8 @@ class Reports(Module):
             if not isinstance(error, discord.HTTPException):
                 raise
             log.warning("Could not post report in %s: %s", channel.id, error)
+            if error.status >= 500:  # Discord itself failed, and the same report will go through in a moment
+                raise ReportFailed("Discord didn't take the report just now. Try again.") from error
             raise ReportFailed("The report couldn't reach the reports channel. Tell an admin.") from error
         await self.db.run("UPDATE reports SET post_channel_id = ?, post_message_id = ? WHERE id = ?", (channel.id, sent.id, report_id))
         row.update(post_channel_id=channel.id, post_message_id=sent.id)
@@ -1218,6 +1240,8 @@ class Reports(Module):
 
     async def _open_duplicate(self, draft: Draft) -> dict | None:
         """An open report this one can join: the same message, or the same person with nothing new to show. One whose post is gone can't take names."""
+        if draft.kind == VOICE:
+            return None  # each one shows who was in the channel at that moment, which a name added to another report would lose
         if draft.kind == "message":
             row = await self.db.one("SELECT * FROM reports WHERE guild_id = ? AND message_id = ? AND state = 'open' AND post_message_id IS NOT NULL ORDER BY id LIMIT 1", (draft.guild.id, draft.message_id))
         elif draft.evidence or draft.attachments:
@@ -1489,6 +1513,10 @@ class Reports(Module):
             guild=ctx.guild, kind="user" if member is not None else PLACE, reporter=ctx.author, target=member or NO_ONE_NAMED, reason=reason, filed_in=ctx.channel.id,
             jump_url=_message_url(ctx.guild.id, ctx.channel.id, jump_to), evidence=evidence,
         )
+        await self._file_typed(ctx, draft, removed)
+
+    async def _file_typed(self, ctx: commands.Context, draft: Draft, removed: bool) -> None:
+        """The rest of a typed report once its message is down: file it, answer the reporter in private, and open the review."""
         try:
             try:
                 row = await self._file_or_join(draft)
@@ -1505,6 +1533,51 @@ class Reports(Module):
                 await self._finish_filing(draft, row)
         finally:
             self._held.release(draft.evidence)
+
+    # ---- voice reports, which the voice module's /vc_report and VC Report menu file here like any other report ----
+
+    def voice_refusal(self, reporter: Any, target: Any) -> str | None:
+        """Why this voice report can't be filed now. The rules and the cooldown are the ones every report follows."""
+        refusal = self._refusal(reporter.guild, reporter, target, noun="profile")
+        if refusal:
+            return refusal
+        left = self._cooldown_left(reporter)
+        return self._wait_text(left) if left else None
+
+    @staticmethod
+    def voice_draft(reporter: Any, target: Any, reason: str, *, filed_in: int | None, jump_url: str | None) -> Draft:
+        """A report on someone in voice, holding the channel they were in and who was there, as they were when it was filed."""
+        voice = getattr(target, "voice", None)
+        channel = voice.channel if voice is not None else None
+        present = [discord.utils.escape_markdown(member.display_name) for member in channel.members if not member.bot] if channel is not None else []
+        return Draft(
+            guild=reporter.guild, kind=VOICE, reporter=reporter, target=target, reason=reason, channel_id=channel.id if channel is not None else None,
+            in_voice=present, filed_in=filed_in, jump_url=jump_url,
+        )
+
+    async def submit_voice_report(self, interaction: discord.Interaction, member: Any, reason: str) -> None:
+        """A voice report from the slash command or the menu's form, answered and filed as a member report is."""
+        left = self._cooldown_left(interaction.user)
+        if left:
+            await interaction.response.send_message(self._wait_text(left), ephemeral=True)
+            return
+        self._start_cooldown(interaction.user)
+        await interaction.response.defer(ephemeral=True)
+        channel_id = interaction.channel_id
+        draft = self.voice_draft(interaction.user, member, reason, filed_in=channel_id, jump_url=_message_url(interaction.guild_id, channel_id, interaction.id) if channel_id else None)
+        await self._file_from_interaction(interaction, draft)
+
+    async def typed_voice_report(self, ctx: commands.Context, member: Any, reason: str) -> None:
+        """A voice report typed as text. Like a typed report, its message comes down at once and the answer is private."""
+        refusal = self.voice_refusal(ctx.author, member)
+        if not refusal:
+            self._start_cooldown(ctx.author)
+        removed = await _delete_quietly(ctx.message)
+        if refusal:
+            await ctx.fail(refusal, delete_after=10)
+            return
+        draft = self.voice_draft(ctx.author, member, reason, filed_in=ctx.channel.id, jump_url=_message_url(ctx.guild.id, ctx.channel.id, ctx.message.id))
+        await self._file_typed(ctx, draft, removed)
 
     @report.error
     async def _report_refused(self, ctx: commands.Context, error: Exception) -> None:
@@ -1566,11 +1639,18 @@ class Reports(Module):
                 return {**row, "case_number": case["number"]}
         return row
 
+    def _handles(self, member: Any, row: dict | None) -> bool:
+        """Who may press a report's buttons: staff, and on a VC report the server's voice moderators too, who handled VC reports before they were reports."""
+        if self.is_staff(member):
+            return True
+        voice = self.bot.module("voice")
+        return row is not None and row["kind"] == VOICE and voice is not None and voice.is_moderator(member)
+
     async def press_state(self, interaction: discord.Interaction, state: str) -> None:
-        if not self.is_staff(interaction.user):
+        row = await self.report_by_post(interaction.guild_id, interaction.message.id)
+        if not self._handles(interaction.user, row):
             await interaction.response.send_message("Only staff can handle reports.", ephemeral=True)
             return
-        row = await self.report_by_post(interaction.guild_id, interaction.message.id)
         if row is None:
             await interaction.response.send_message("This report is no longer tracked.", ephemeral=True)
             return
@@ -1593,10 +1673,10 @@ class Reports(Module):
         return embed
 
     async def press_history(self, interaction: discord.Interaction) -> None:
-        if not self.is_staff(interaction.user):
+        row = await self.report_by_post(interaction.guild_id, interaction.message.id)
+        if not self._handles(interaction.user, row):
             await interaction.response.send_message("Only staff can read message history.", ephemeral=True)
             return
-        row = await self.report_by_post(interaction.guild_id, interaction.message.id)
         if row is None:
             await interaction.response.send_message("This report is no longer tracked.", ephemeral=True)
             return
@@ -3153,16 +3233,18 @@ class Reports(Module):
             ("user", OPEN, "former_member", ghost, "Their profile picture breaks the rules.", "", 0),
             ("message", ACTIONED, member["name"], member["id"], "Insulting people in the help channel.", "That is the worst advice I have read all week", 0),
             ("message", FALSE_POSITIVE, "former_member", ghost, "I just don't like this.", "I think the other brand is better", 0),
+            (VOICE, OPEN, member["name"], member["id"], "Playing loud music into the channel.", "", 0),
         ]
         for number, (kind, state, name, target, reason, content, files) in enumerate(samples, 1):
             message_id = 900000000000200000 + number if kind == "message" else None
+            channel_id = channels["general"] if message_id else channels["Lounge"] if kind == VOICE else None
             kept = [{"filename": "screenshot.png", "name": "evidence-1.png", "size": 48211, "content_type": "image/png", "copied": True}] if files else []
             post = await ops.send_message(channels["reports"], {"content": "", "embeds": [{"description": f"Sample report {number}", "color": STATE_COLORS[state]}], "buttons": []})
             await self.db.insert(
                 "INSERT INTO reports (guild_id, number, kind, state, reporter_id, reporter_name, target_id, target_name, reason, channel_id, message_id, message_created_at, content, "
                 "attachment_count, reaction_count, files, jump_url, post_channel_id, post_message_id, post_text, handled_by, handled_name, handled_at, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (guild_id, number, kind, state, admin["id"], admin["name"], target, name, reason, channels["general"] if message_id else None, message_id, now - 7200 * number if message_id else None,
+                (guild_id, number, kind, state, admin["id"], admin["name"], target, name, reason, channel_id, message_id, now - 7200 * number if message_id else None,
                  content, files, 0, json.dumps(kept), _message_url(guild_id, channels["general"], message_id or post["id"]), channels["reports"], post["id"], f"Sample report {number}",
                  None if state == OPEN else admin["id"], None if state == OPEN else admin["name"], None if state == OPEN else now - 600, now - 3600 * number),
             )

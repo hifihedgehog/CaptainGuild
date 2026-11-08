@@ -17,6 +17,18 @@ import discord
 KEEP_PER_GUILD = 500
 
 
+def target_id_of(entry: Any) -> int | None:
+    """The ID of what an entry acted on. discord.py builds `target` on first read, and for a channel entry Discord sent with no
+    target ID that build fails, so the raw ID comes first and the failure means there is none."""
+    raw = getattr(entry, "_target_id", None)
+    if raw is not None:
+        return raw
+    try:
+        return getattr(entry.target, "id", None)
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass
 class Entry:
     guild_id: int
@@ -40,7 +52,7 @@ class AuditWatcher:
         kept = Entry(
             guild_id=entry.guild.id,
             action=entry.action,
-            target_id=getattr(entry.target, "id", None) or entry._target_id if hasattr(entry, "_target_id") else getattr(entry.target, "id", None),
+            target_id=target_id_of(entry),
             user_id=entry.user_id,
             user=entry.user,
             reason=entry.reason,

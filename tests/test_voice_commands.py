@@ -7,7 +7,8 @@ from discord import app_commands
 
 from captainguild.core.perms import MODULE as COMMANDS_MODULE
 from captainguild.core.shortcuts import SHORTCUTS
-from captainguild.modules.voice import BLOCK, DEAFEN, MUTE, read_length, split_length
+from captainguild.modules.reports import Reports
+from captainguild.modules.voice import BLOCK, DEAFEN, MUTE, Voice, read_length, split_length
 from tests.test_voice import VoiceTest
 
 OLD_NAMES = {
@@ -85,10 +86,6 @@ class TypedSpellingsTest(VoiceTest):
             self.assertIsNotNone(await self.db.one("SELECT * FROM mini_mutes WHERE user_id = ?", (self.member_id,)), typed)
             await self.typed(f"{typed} <@{self.member_id}>")
             self.assertIsNone(await self.db.one("SELECT * FROM mini_mutes WHERE user_id = ?", (self.member_id,)), typed)
-
-    async def test_a_typed_report_by_the_old_group_name(self):
-        await self.typed(f"!vc report <@{self.member_id}> shouting", user_id=self.vet_id)
-        self.assertEqual(await self.db.scalar("SELECT reason FROM voice_reports"), "shouting")
 
     async def test_the_server_rule_for_the_real_command_covers_the_other_spelling(self):
         await self.join(self.member_id)
@@ -181,3 +178,15 @@ class AnswerFirstTest(VoiceTest):
         await self.slash("vc_mute", self.vet_id, user=self.member(self.staff_id))
         callback = next(call for call in self.net.calls if call[1].endswith("/callback"))
         self.assertTrue(self.is_private(callback[2]["data"]))
+
+
+class TypedReportTest(VoiceTest):
+    """A VC report typed by its old group name, filed through the reports module."""
+    modules = [Voice, Reports]
+
+    async def test_a_typed_report_by_the_old_group_name(self):
+        await self.bot.settings.save(self.guild_id, "reports", {"report_channel": int(self.reports_channel["id"])})
+        self.dispatch_message(user_id=self.vet_id, content=f"!vc report <@{self.member_id}> shouting")
+        await self.settle()
+        self.assert_no_errors()
+        self.assertEqual(await self.db.scalar("SELECT reason FROM reports WHERE kind = 'voice'"), "shouting")

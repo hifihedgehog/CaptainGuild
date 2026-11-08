@@ -100,10 +100,10 @@ function SettingsTab() {
       <${Col}>
         <${Card} icon="mic" title="Voice moderation" footer=${save}>
           <h2>Voice moderation</h2>
-          <p class="muted">Temporary server mutes, deafens and rejoin blocks with /vc_mute, /vc_deafen, /vc_disconnect and the Voice Actions menu. Members report with the VC Report menu or /vc_report.</p>
-          <${RolePicker} label="Moderator role" help="Its holders are voice moderators, as are Manage Server and the bot manager role. It is pinged for a VC report, once per reported person in 10 minutes." placeholder="None" ...${form.bind('moderator_role')} />
-          <${ChannelPicker} label="VC report channel" help="VC reports and every action a VC veteran takes land here. VC veterans can't act until this is set." ...${form.bind('report_channel')} />
-          <${NumberInput} label="Default length" addon="minutes" min=${1} max=${10080} help="Used by report buttons, the menu, and commands given no length." ...${form.bind('temp_minutes')} />
+          <p class="muted">Temporary server mutes, deafens and rejoin blocks with /vc_mute, /vc_deafen, /vc_disconnect and the Voice Actions menu. Members report with the VC Report menu or /vc_report, and those reports go to the reports channel with every other report.</p>
+          <${RolePicker} label="Moderator role" help="Its holders are voice moderators, as are Manage Server and the bot manager role." placeholder="None" ...${form.bind('moderator_role')} />
+          <${ChannelPicker} label="VC veteran log" help="Every action a VC veteran takes is posted here. Without one, veterans still act and nothing is posted." ...${form.bind('report_channel')} />
+          <${NumberInput} label="Default length" addon="minutes" min=${1} max=${10080} help="Used by the Voice Actions menu and by commands given no length." ...${form.bind('temp_minutes')} />
         <//>
         <${Card} icon="user-check" title="VC veterans" footer=${save}>
           <h2>VC veterans</h2>
@@ -296,11 +296,15 @@ function MiniMutesTab() {
   </div>`;
 }
 
+const REPORT_STATUS = {
+  open: ['Open', 'blue'], actioned: ['Actioned', 'green'], acted: ['Actioned', 'green'], false_positive: ['False positive', 'red'], handled: ['Dismissed', 'outline'],
+};
+
 function ReportsTab() {
   const guild = useGuild();
   const table = usePaged('/voice/reports', {}, 0);
   return html`<div>
-    <p class="muted">Staff act on these with the buttons on each post.</p>
+    <p class="muted">Staff act on these with the buttons on each post. The Reports page has each one in full.</p>
     <${TableTools} table=${table} />
     ${table.failed && html`<${Notice} kind="bad">${table.failed.message}<//>`}
     <div class="table-wrap"><table>
@@ -308,13 +312,13 @@ function ReportsTab() {
       <tbody>
         ${!table.data && !table.failed && html`<tr><td colspan="7"><${Loading} /></td></tr>`}
         ${table.data && table.data.rows.length === 0 && html`<tr><td colspan="7"><${Empty}>No VC reports yet<//></td></tr>`}
-        ${table.data && table.data.rows.map((row) => html`<tr key=${row.report_message_id}>
+        ${table.data && table.data.rows.map((row) => html`<tr key=${String(row.post_message_id || row.created_at)}>
           <td title=${String(row.target_id)}>${row.target_name}</td>
           <td title=${String(row.reporter_id)}>${row.reporter_name}</td>
           <td>${row.voice_channel_id ? channelName(guild, row.voice_channel_id) : html`<span class="dim">Not in voice</span>`}</td>
           <td><div class="truncate">${row.reason}</div></td>
           <td class="small">${when(row.created_at)}</td>
-          <td><span class=${'badge ' + (row.status === 'open' ? 'blue' : 'outline')}>${row.status === 'open' ? 'Open' : 'Handled'}</span></td>
+          <td><span class=${'badge ' + (REPORT_STATUS[row.status] || REPORT_STATUS.handled)[1]}>${(REPORT_STATUS[row.status] || REPORT_STATUS.handled)[0]}</span></td>
           <td>${row.url && html`<a class="btn small" href=${row.url} target="_blank" rel="noopener noreferrer" aria-label="Open the report post"><${Icon} name="external-link" /></a>`}</td>
         </tr>`)}
       </tbody>

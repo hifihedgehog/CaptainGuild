@@ -2712,7 +2712,8 @@ class UnknownMessageCreditTest(Base):
     async def test_a_message_the_store_doesnt_have_lets_a_known_one_claim_first(self):
         real = await self.send("what the moderator deleted")
         self.delete_entry(count=1)
-        with mock.patch.object(logs_module, "DELETE_SETTLE", 0.02), mock.patch.object(logs_module, "DELETE_LATE_WAIT", 0.05):
+        # The known delete's head start has to outlast its store lookup. With eight test processes at once, 50 ms didn't.
+        with mock.patch.object(logs_module, "DELETE_SETTLE", 0.02), mock.patch.object(logs_module, "DELETE_LATE_WAIT", 0.5):
             await asyncio.gather(self.delete(new_id()), self.delete(real.id))
         by_text = {embed.get("description"): field_value(embed, "Deleted by") for _, embed, _ in self.posted}
         self.assertIn(f"<@{self.mod.id}>", by_text["what the moderator deleted"])

@@ -7,6 +7,7 @@ import {
 
 const PAGE_SIZES = [10, 25, 50, 100];
 const STATES = { open: { label: 'Open', badge: 'blue' }, actioned: { label: 'Actioned', badge: 'green' }, false_positive: { label: 'False positive', badge: 'red' } };
+const KINDS = { message: 'Message', voice: 'Voice', place: 'No one named' };
 const REVIEW = { active: { label: 'In review', badge: 'blue' }, done: { label: 'Finished', badge: 'green' }, dismissed: { label: 'Dismissed', badge: 'outline' } };
 const DEFAULT_LADDER = [
   { action: 'warn', seconds: 0 }, { action: 'mute', seconds: 86400 }, { action: 'mute', seconds: 259200 }, { action: 'tempban', seconds: 604800 }, { action: 'ban', seconds: 0 },
@@ -147,6 +148,7 @@ function ReportDetail({ id, onClose, onChanged }) {
       <${Fact} label="Reported">${row.target_name} <span class="dim mono small">${row.target_id}</span><//>
       <${Fact} label="Reported by">${row.reporter_name} <span class="dim mono small">${row.reporter_id}</span><//>
       <${Fact} label="Filed">${when(row.created_at)}<//>
+      ${row.kind === 'voice' && html`<${Fact} label="Voice channel">${row.channel_id ? channelName(guild, row.channel_id) : 'Not in voice when reported'}<//>`}
       ${row.kind === 'message' && html`
         <${Fact} label="Channel">#${channelName(guild, row.channel_id)}<//>
         <${Fact} label="Message ID"><span class="mono small">${row.message_id}</span><//>
@@ -215,7 +217,7 @@ function ReportsTab() {
         ${table.data && table.data.rows.length === 0 && html`<tr><td colspan="8"><${Empty}>No matching records<//></td></tr>`}
         ${table.data && table.data.rows.map((row) => html`<tr key=${row.id}>
           <td>${row.number}</td>
-          <td><span class=${'badge ' + STATES[row.state].badge}>${STATES[row.state].label}</span><div class="dim small">${row.kind === 'message' ? 'Message' : 'Member'}</div></td>
+          <td><span class=${'badge ' + STATES[row.state].badge}>${STATES[row.state].label}</span><div class="dim small">${KINDS[row.kind] || 'Member'}</div></td>
           <td title=${String(row.target_id)}>${row.target_name}</td>
           <td title=${String(row.reporter_id)}>${row.reporter_name}</td>
           <td><div class="truncate">${row.reason}</div></td>
