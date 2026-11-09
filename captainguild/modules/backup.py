@@ -855,9 +855,9 @@ class Backup(Module):
         partial = path.with_name(path.name + ".part")
         self._remove_file(partial)
         store = self.db.sibling(partial)
-        await store.open()
         total = 0
         try:
+            await store.open()
             await store.run("CREATE TABLE chunks (seq INTEGER PRIMARY KEY, data BLOB NOT NULL)")
             sequence = 0
             pending = bytearray()

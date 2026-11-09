@@ -142,6 +142,36 @@ class OpenTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(cipher.OperationalError):
                 db_module._open_encrypted("x", KEY)
 
+    async def test_an_open_cut_short_leaves_no_connection_running(self):
+        # A task canceled while the file is set up, as at shutdown, or a setup statement that fails: either way the connection's worker
+        # thread, which isn't a daemon and would keep the process from exiting, ends.
+        import aiosqlite
+        for trouble in (asyncio.CancelledError(), OSError("disk I/O error")):
+            with self.subTest(trouble=type(trouble).__name__), tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+                started = []
+                real_execute = aiosqlite.Connection.execute
+
+                def execute(connection, sql, *args, **kwargs):
+                    started.append(connection._thread)
+                    if sql.startswith("PRAGMA synchronous"):
+                        raise trouble
+                    return real_execute(connection, sql, *args, **kwargs)
+                database = Database(Path(folder) / "cut.db", KEY)
+                kept = None
+                with mock.patch.object(aiosqlite.Connection, "execute", execute):
+                    try:
+                        await database.open()
+                    except type(trouble) as error:
+                        kept = error  # held with its frames, the way a finished task holds what ended it
+                self.assertIsNotNone(kept)
+                self.assertIsNone(database.conn)
+                thread = started[0]
+                for _ in range(200):
+                    if not thread.is_alive():
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertFalse(thread.is_alive(), "the connection's thread ended")
+
     async def test_a_wrong_key_still_is(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
             path = Path(folder) / "main.db"

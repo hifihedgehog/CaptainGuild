@@ -67,18 +67,25 @@ class Database:
         self._write_lock = asyncio.Lock()
 
     async def open(self) -> None:
-        self.conn = await aiosqlite.Connection(lambda: _open_encrypted(self.path, self._key), 64)
-        self.conn.row_factory = cipher.Row
-        await self.conn.execute("PRAGMA journal_mode=WAL")
-        await self.conn.execute("PRAGMA synchronous=NORMAL")
-        await self.conn.execute("PRAGMA foreign_keys=ON")
-        await self.conn.execute("PRAGMA secure_delete=ON")
-        await self.conn.execute(f"PRAGMA journal_size_limit={WAL_LIMIT_BYTES}")
-        await self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS schema_steps (namespace TEXT NOT NULL, step INTEGER NOT NULL, applied_at REAL NOT NULL, "
-            "PRIMARY KEY (namespace, step))"
-        )
-        await self.conn.commit()
+        """Opens the file. When anything after connecting fails, a cancellation included, the connection is stopped before the error
+        goes on: its worker thread isn't a daemon, and one left running keeps the process from exiting."""
+        conn = await aiosqlite.Connection(lambda: _open_encrypted(self.path, self._key), 64)
+        try:
+            conn.row_factory = cipher.Row
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute("PRAGMA synchronous=NORMAL")
+            await conn.execute("PRAGMA foreign_keys=ON")
+            await conn.execute("PRAGMA secure_delete=ON")
+            await conn.execute(f"PRAGMA journal_size_limit={WAL_LIMIT_BYTES}")
+            await conn.execute(
+                "CREATE TABLE IF NOT EXISTS schema_steps (namespace TEXT NOT NULL, step INTEGER NOT NULL, applied_at REAL NOT NULL, "
+                "PRIMARY KEY (namespace, step))"
+            )
+            await conn.commit()
+        except BaseException:
+            conn.stop()  # closes the file on the connection's own thread and ends the thread, with nothing to wait for
+            raise
+        self.conn = conn
 
     async def close(self) -> None:
         if self.conn is not None:
