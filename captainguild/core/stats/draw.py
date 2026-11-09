@@ -101,11 +101,94 @@ def can_draw(character: str, bold: bool = False) -> bool:
     return bool(mask.size[0]) and bytes(mask) != bytes(face.getmask("\U0010FFFF"))
 
 
+_JOINERS = frozenset("\u200d\ufe0f\u20e3")  # zero-width joiner, emoji presentation, keycap
+EMOJI_HEIGHT = 1.08  # an emoji's height beside text, in multiples of the text's size
+EMOJI_SPACE = 0.08  # the room on each side of an emoji, in multiples of the text's size
+
+
+def _joins(character: str) -> bool:
+    code = ord(character)
+    return character in _JOINERS or 0x1F3FB <= code <= 0x1F3FF or 0xE0020 <= code <= 0xE007F  # skin tones and the tags of subdivision flags
+
+
+def _regional(character: str) -> bool:
+    return 0x1F1E6 <= ord(character) <= 0x1F1FF
+
+
+def clusters(text: str) -> list[str]:
+    """The text cut where a reader sees one character end. An emoji keeps its skin tone, its joined parts, its keycap and its presentation
+    selector, and two regional letters make one flag."""
+    out: list[str] = []
+    for character in text:
+        if out and (_joins(character) or out[-1].endswith("\u200d")):
+            out[-1] += character
+        elif out and _regional(character) and len(out[-1]) == 1 and _regional(out[-1]):
+            out[-1] += character
+        else:
+            out.append(character)
+    return out
+
+
+def _emoji_like(cluster: str, bold: bool = False) -> bool:
+    """Whether the cluster is one the color emoji font should draw: one joined or marked for emoji, a flag, or one the text font lacks."""
+    return (len(cluster) > 1 and (any(_joins(character) for character in cluster) or _regional(cluster[0]))) or not can_draw(cluster[0], bold)
+
+
+@functools.lru_cache(maxsize=4096)
+def emoji_picture(cluster: str) -> Image.Image | None:
+    """The cluster in color, cut to its ink, from the color emoji font. None without the font, or when the font has nothing for it."""
+    face = _emoji_font()
+    if face is None:
+        return None
+    layer = Image.new("RGBA", (420, 180), (0, 0, 0, 0))
+    try:
+        ImageDraw.Draw(layer).text((210, 90), cluster, font=face, embedded_color=True, anchor="mm")
+    except (OSError, ValueError):
+        return None
+    box = layer.getbbox()
+    if box is None:
+        return None
+    picture = layer.crop(box)
+    if not any(r != g or g != b for r, g, b, a in picture.getdata() if a > 128):
+        return None  # only gray ink: the font's empty box, or no emoji at all
+    return picture
+
+
+def runs(text: str, bold: bool = False) -> list[tuple[str, str]]:
+    """The text as ("text", letters) runs for the text font and ("emoji", cluster) for each emoji the color font draws."""
+    out: list[tuple[str, str]] = []
+    for cluster in clusters(text):
+        if _emoji_like(cluster, bold) and emoji_picture(cluster) is not None:
+            out.append(("emoji", cluster))
+        elif out and out[-1][0] == "text":
+            out[-1] = ("text", out[-1][1] + cluster)
+        else:
+            out.append(("text", cluster))
+    return out
+
+
+def emoji_advance(cluster: str, size: float) -> float:
+    """How much room an emoji takes beside text of this size."""
+    picture = emoji_picture(cluster)
+    if picture is None:
+        return 0.0
+    return size * EMOJI_HEIGHT * picture.width / picture.height + 2 * size * EMOJI_SPACE
+
+
 def drawable(text: str, fallback: str = "", bold: bool = False) -> str:
-    """Text without the characters the font lacks, such as most emoji, with spaces tidied. The fallback when nothing is left."""
-    kept = "".join(character for character in (text or "") if character == " " or can_draw(character, bold))
-    kept = " ".join(kept.split())
-    return kept or fallback
+    """Text without the characters neither font can draw, with spaces tidied: an emoji stays when the machine has a color emoji font that
+    draws it. The fallback when nothing is left."""
+    kept = []
+    for cluster in clusters(text or ""):
+        if _emoji_like(cluster, bold):
+            if emoji_picture(cluster) is not None:
+                kept.append(cluster)
+            else:
+                kept.append("".join(character for character in cluster if not _joins(character) and can_draw(character, bold)))
+        else:
+            kept.append(cluster)
+    shown = " ".join("".join(kept).split())
+    return shown or fallback
 
 
 def readable(text: str | None, bold: bool = False) -> str | None:
@@ -195,14 +278,37 @@ class Card:
     def measure(self, text: str, size: float, bold: bool = False) -> float:
         if not text:
             return 0.0
-        return self.draw.textlength(text, font=font(size, bold)) / S
+        face = font(size, bold)
+        return sum(self.draw.textlength(value, font=face) / S if kind == "text" else emoji_advance(value, size) for kind, value in runs(text, bold))
 
     def text(self, x: float, y: float, text: str, size: float, *, bold: bool = False, color: Any = TEXT, anchor: str = "ls") -> float:
         """Draws text and returns its width. `anchor` is Pillow's: "ls" left on the baseline, "rs" right, "ms" centered, "lm" left middle."""
         if not text:
             return 0.0
-        self.draw.text((x * S, y * S), text, font=font(size, bold), fill=color, anchor=anchor)
-        return self.measure(text, size, bold)
+        parts = runs(text, bold)
+        if all(kind == "text" for kind, _ in parts):
+            self.draw.text((x * S, y * S), text, font=font(size, bold), fill=color, anchor=anchor)
+            return self.measure(text, size, bold)
+        # Letters and emoji side by side: the letters in the text font on one baseline, each emoji in color beside them.
+        face = font(size, bold)
+        width = self.measure(text, size, bold)
+        across, down = anchor[0], anchor[1]
+        cursor = x - (width if across == "r" else width / 2 if across == "m" else 0)
+        ascent, descent = (value / S for value in face.getmetrics())
+        baseline = {"a": y + ascent, "t": y + ascent, "m": y + (ascent - descent) / 2, "b": y - descent, "d": y - descent}.get(down, y)
+        for kind, value in parts:
+            if kind == "text":
+                self.draw.text((cursor * S, baseline * S), value, font=face, fill=color, anchor="ls")
+                cursor += self.draw.textlength(value, font=face) / S
+                continue
+            picture = emoji_picture(value)
+            height = size * EMOJI_HEIGHT
+            scaled = picture.resize((max(1, round(height * picture.width / picture.height * S)), max(1, round(height * S))), Image.Resampling.LANCZOS)
+            middle = baseline - size * 0.36  # where capital letters have their middle
+            left = cursor + size * EMOJI_SPACE
+            self.image.paste(scaled, (round(left * S), round(middle * S - scaled.height / 2)), scaled)
+            cursor += emoji_advance(value, size)
+        return width
 
     def fit(self, text: str, width: float, size: float, *, minimum: float | None = None, bold: bool = False) -> tuple[str, float]:
         """The largest size down to `minimum` that fits, and then the text cut short with an ellipsis if even that doesn't."""
@@ -213,8 +319,10 @@ class Card:
                 return text, current
             current -= 1
         current = minimum
-        while text and self.measure(text + "\u2026", current, bold) > width:
-            text = text[:-1]
+        parts = clusters(text)  # cut between characters as a reader sees them, never through an emoji
+        while parts and self.measure("".join(parts) + "\u2026", current, bold) > width:
+            parts.pop()
+        text = "".join(parts)
         return (text.rstrip() + "\u2026") if text else "", current
 
     def fitted(self, x: float, y: float, text: str, width: float, size: float, *, minimum: float | None = None, bold: bool = False, color: Any = TEXT,
@@ -513,6 +621,32 @@ def nice_ticks(top: float, count: int = 4) -> list[float]:
     return ticks
 
 
+def label_places(spots: Sequence[tuple[int, float, float]], left: float, right: float, *, gap: float = 24, ends: bool = True) -> list[tuple[int, float, str]]:
+    """Where the chosen labels go: (index, x, anchor) for each (index, x, width) asked, left to right. With `ends`, the first bucket's label
+    starts at the plot's left edge and the last one ends at its right edge, as a line's first and last points sit on those edges. A label
+    that would come closer than `gap` to the one kept before it is left out, and the last label always stays, so a label beside it goes."""
+    placed: list[tuple[int, float, str, float, float]] = []
+    final = spots[-1][0] if spots else None
+    for index, x, width in spots:
+        anchor = "ms"
+        start, end = x - width / 2, x + width / 2
+        if ends and index == 0:
+            anchor, start, end = "ls", x, x + width
+        elif ends and index == final and len(spots) > 1:
+            anchor, start, end = "rs", x - width, x
+        elif start < left:
+            anchor, x, start, end = "ls", left, left, left + width
+        elif end > right:
+            anchor, x, start, end = "rs", right, right - width, right
+        while placed and start < placed[-1][4] + gap:
+            if index != final:
+                break
+            placed.pop()  # the last label stays, so the one crowding it goes
+        else:
+            placed.append((index, x, anchor, start, end))
+    return [(index, x, anchor) for index, x, anchor, _, _ in placed]
+
+
 def label_indexes(count: int, width: float, label_width: float) -> list[int]:
     """Which buckets get a label under the axis, evenly spaced, the last one always."""
     if count <= 0:
@@ -558,13 +692,9 @@ class Plot:
                 card.text(self.left - 12, y, text, 20, color=DIM, anchor="rm")
         if labels:
             widest = max(card.measure(text, 19) for text in labels)
-            for index in label_indexes(len(labels), self.right - self.left, widest):
-                anchor = "ms"
-                x = self.x(index)
-                if not columns and index == 0:
-                    anchor = "ls"
-                elif not columns and index == len(labels) - 1:
-                    anchor = "rs"
+            chosen = label_indexes(len(labels), self.right - self.left, widest)
+            spots = [(index, self.x(index), card.measure(labels[index], 19)) for index in chosen]
+            for index, x, anchor in label_places(spots, self.left, self.right, ends=not columns):
                 card.text(x, y1 - 14, labels[index], 19, color=DIM, anchor=anchor)
 
     def x(self, index: float) -> float:

@@ -3,6 +3,7 @@ import datetime
 import io
 import types
 import unittest
+from unittest import mock
 
 import discord
 from PIL import Image
@@ -13,6 +14,17 @@ from captainguild.modules.statistics import Statistics
 from tests.fakes import NOW, BotTest, FakeChannel, FakeMember, FakePermissions
 
 UTC = tf.zone("UTC")
+
+
+def no_emoji_font():
+    """A machine without a color emoji font."""
+    return mock.patch.object(draw, "emoji_picture", lambda cluster: None)
+
+
+def stand_in_emoji_font(drawn=("\U0001F3EC", "\U0001F3AE", "\U0001F468\u200d\U0001F469\u200d\U0001F467", "\U0001F1FA\U0001F1F8")):
+    """A machine whose color emoji font draws these clusters, each as a red square."""
+    square = Image.new("RGBA", (100, 100), (220, 40, 40, 255))
+    return mock.patch.object(draw, "emoji_picture", lambda cluster: square if cluster in drawn else None)
 
 
 class Words(unittest.TestCase):
@@ -91,8 +103,72 @@ class Drawing(unittest.TestCase):
         self.assertLessEqual(len(chosen), 10)
 
     def test_names_lose_only_the_characters_the_font_lacks(self):
-        self.assertEqual(draw.drawable("\U0001F3EC│printer-chat"), "│printer-chat")
-        self.assertEqual(draw.drawable("\U0001F9EA", "#1234"), "#1234")
+        with no_emoji_font():
+            self.assertEqual(draw.drawable("\U0001F3EC│printer-chat"), "│printer-chat")
+            self.assertEqual(draw.drawable("\U0001F9EA", "#1234"), "#1234")
+
+    def test_a_color_emoji_font_keeps_the_emoji_it_draws(self):
+        with stand_in_emoji_font():
+            self.assertEqual(draw.drawable("\U0001F3EC│printer-chat"), "\U0001F3EC│printer-chat")
+            self.assertEqual(draw.drawable("\U0001F9EA", "#1234"), "#1234", "an emoji even the color font lacks still drops out")
+            self.assertEqual(draw.runs("\U0001F3EC│printer-chat"), [("emoji", "\U0001F3EC"), ("text", "│printer-chat")])
+
+    def test_clusters_keep_each_emoji_whole(self):
+        family = "\U0001F468\u200d\U0001F469\u200d\U0001F467"
+        self.assertEqual(draw.clusters("a" + family + "b"), ["a", family, "b"])
+        self.assertEqual(draw.clusters("\U0001F1FA\U0001F1F8\U0001F1E9\U0001F1EA"), ["\U0001F1FA\U0001F1F8", "\U0001F1E9\U0001F1EA"], "two flags")
+        self.assertEqual(draw.clusters("1\ufe0f\u20e3!"), ["1\ufe0f\u20e3", "!"], "a keycap")
+        self.assertEqual(draw.clusters("\U0001F44D\U0001F3FD"), ["\U0001F44D\U0001F3FD"], "a skin tone")
+
+    def test_an_emoji_draws_in_color_where_it_sits_in_the_text(self):
+        with stand_in_emoji_font():
+            card = draw.Card(200)
+            width = card.text(20, 100, "\U0001F3EC│chat", 30)
+            plain = card.measure("│chat", 30)
+            self.assertAlmostEqual(width, plain + draw.emoji_advance("\U0001F3EC", 30), places=3)
+            image = card.image
+            reds = [(x, y) for x in range(0, 120 * draw.S) for y in range(40 * draw.S, 110 * draw.S) if image.getpixel((x, y))[:3] == (220, 40, 40)]
+            self.assertTrue(reds, "the emoji is drawn")
+            self.assertLess(max(x for x, _ in reds) / draw.S, 20 + draw.emoji_advance("\U0001F3EC", 30) + 1, "before the letters, where it sits")
+
+    def test_a_cut_name_never_splits_an_emoji(self):
+        family = "\U0001F468\u200d\U0001F469\u200d\U0001F467"
+        wide, square = Image.new("RGBA", (300, 100), (220, 40, 40, 255)), Image.new("RGBA", (100, 100), (220, 40, 40, 255))
+        # The whole family draws three times as wide as a part of it, as a color font draws an unfinished sequence as its first person.
+        drawn = lambda cluster: wide if cluster == family else square if "\U0001F468" in cluster else None  # noqa: E731
+        with mock.patch.object(draw, "emoji_picture", drawn):
+            card = draw.Card(200)
+            whole = card.measure("ab" + family, 30)
+            shown, _ = card.fit("ab" + family + "cdefgh", whole + card.measure("\u2026", 30) + 1, 30, minimum=30)
+            self.assertEqual(shown, "ab" + family + "\u2026")
+            room = card.measure("ab", 30) + draw.emoji_advance("\U0001F468", 30) + card.measure("\u2026", 30) + 2
+            shown, _ = card.fit("ab" + family + "cdefgh", room, 30, minimum=30)
+            self.assertEqual(shown, "ab\u2026", "the family goes whole, never cut down to one of its people")
+
+    def test_axis_labels_never_crowd_each_other(self):
+        # A line's all-time chart: 232 weeks over 1,080 pixels, the first label at the left edge and the last at the right one.
+        card = draw.Card(200)
+        labels = [f"{month} 2024" for month in ("May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")] * 29
+        left, right = 120.0, 1200.0
+        x = lambda index: left + index * (right - left) / (len(labels) - 1)  # noqa: E731
+        chosen = draw.label_indexes(len(labels), right - left, max(card.measure(text, 19) for text in labels))
+        placed = draw.label_places([(index, x(index), card.measure(labels[index], 19)) for index in chosen], left, right)
+        self.assertEqual(placed[-1][0], len(labels) - 1, "the last bucket keeps its label")
+        extents = []
+        for index, spot, anchor in placed:
+            width = card.measure(labels[index], 19)
+            start = spot if anchor == "ls" else spot - width if anchor == "rs" else spot - width / 2
+            extents.append((start, start + width))
+        self.assertGreaterEqual(extents[0][0], left, "inside the plot")
+        self.assertLessEqual(extents[-1][1], right)
+        for (_, end), (start, _) in zip(extents, extents[1:]):
+            self.assertGreaterEqual(start - end, 24)
+        with_first = draw.label_places([(0, left, 90.0), (40, x(40), 90.0), (len(labels) - 1, right, 90.0)], left, right)
+        self.assertEqual(with_first[0][1:], (left, "ls"), "a first bucket's label starts at the left edge")
+
+    def test_a_label_crowding_the_last_one_gives_way(self):
+        placed = draw.label_places([(0, 0.0, 80.0), (10, 900.0, 80.0), (11, 990.0, 80.0)], 0.0, 1000.0)
+        self.assertEqual([index for index, _, _ in placed], [0, 11])
 
 
 class Reads(BotTest):
@@ -295,7 +371,11 @@ class CardData(BotTest):
         entry = named[self.member.id]
         self.assertEqual((entry["name"], entry["username"]), ("\u5f35\u5049", "member"))
         self.assertEqual(cards._person_label("en-US", entry), ("member", True), "the username, since every one of its letters draws")
-        self.assertEqual(cards._person_label("en-US", {**entry, "name": "\U0001F3AE\U0001F3AE", "username": "\u30ed\u30dc", "global_name": "Gamer"}), ("Gamer", True))
+        with no_emoji_font():
+            self.assertEqual(cards._person_label("en-US", {**entry, "name": "\U0001F3AE\U0001F3AE", "username": "\u30ed\u30dc", "global_name": "Gamer"}), ("Gamer", True))
+        with stand_in_emoji_font():
+            self.assertEqual(cards._person_label("en-US", {**entry, "name": "\U0001F3AE\U0001F3AE", "username": "\u30ed\u30dc", "global_name": "Gamer"}),
+                             ("\U0001F3AE\U0001F3AE", True), "with a color emoji font, a name of emoji reads as itself")
         self.assertEqual(cards._person_label("en-US", {**entry, "name": "\u30ed\u30dc 3D", "username": "printer_fan"}), ("printer_fan", True),
                          "a name that loses its letters isn't shortened to what's left")
         self.assertEqual(cards._person_label("en-US", {"id": 123456789012345678, "name": "\u5f35\u5049", "username": "\u30ed\u30dc", "global_name": None, "state": "member"}),

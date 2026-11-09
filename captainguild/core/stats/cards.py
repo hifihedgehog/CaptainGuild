@@ -51,8 +51,9 @@ def _voice_short(lang: str, seconds: float, time_unit: str) -> str:
     return f"{words.voice_figure(lang, seconds, time_unit)} {words.short_unit(lang, time_unit)}"
 
 
-def _channel_label(lang: str, entry: dict | None) -> tuple[str, bool]:
-    """A channel's name as a card prints it, and whether it's a real name (False for hidden and deleted ones)."""
+def _channel_label(lang: str, entry: dict | None, *, mark: bool = True) -> tuple[str, bool]:
+    """A channel's name as a card prints it, and whether it's a real name (False for hidden and deleted ones). Without `mark`, a text
+    channel's name has no "#" before it, for a row that already shows the channel's type."""
     if not entry:
         return EMPTY, False
     state = entry.get("state")
@@ -64,7 +65,7 @@ def _channel_label(lang: str, entry: dict | None) -> tuple[str, bool]:
     shown = d.drawable(name or "", "") or "#" + str(entry.get("id", ""))[-4:]
     if state == "deleted":
         return words.t(lang, "deleted_suffix", name=shown), True
-    return ("#" + shown if entry.get("kind") in ("text", "forum") else shown), True
+    return ("#" + shown if mark and entry.get("kind") in ("text", "forum") else shown), True
 
 
 def _first_readable(*names: Any) -> str | None:
@@ -275,7 +276,7 @@ def server(data: dict, lang: str, pictures: dict) -> bytes:
     channel_rows = []
     for icon, entry, value in (("hash", data.get("top_channel_messages"), lambda e: words.figure(lang, e["value"])),
                                ("speaker", data.get("top_channel_voice"), lambda e: _voice_short(lang, e["value"], unit_name))):
-        label, plain = _channel_label(lang, entry)
+        label, plain = _channel_label(lang, entry, mark=False)  # the row's icon already says text or voice
         channel_rows.append({"label": label, "plain": plain, "value_text": value(entry) if entry else "", "icon": icon})
     d.name_value_rows(card, inner, channel_rows, marker=_icon_marker)
     third = second + 190 + G
