@@ -771,7 +771,32 @@ class Runs(BotTest):
         with mock.patch("captainguild.modules.statistics_tools.DM_SPACING", 0.2):
             await self.finish(number)
         self.assertEqual(len(times), 2)
-        self.assertGreaterEqual(times[1] - times[0], 0.19)
+        self.assertGreaterEqual(times[1] - times[0], 0.2)
+
+    async def test_a_slow_message_doesnt_shorten_the_wait_for_the_next_dm(self):
+        give = {"send": "dm", "message": {"content": "You got {role(name)}."}}
+        number = await self.save(give=give)
+        times = []
+        for person in self.people[:2]:
+            original = person.send
+
+            async def timed(*args, _original=original, **kwargs):
+                times.append(time.monotonic())
+                return await _original(*args, **kwargs)
+            person.send = timed
+        renders = []
+        from captainguild.modules import statistics_tools
+        real_render = statistics_tools.render_message
+
+        async def slow_first(payload, scope):
+            renders.append(1)
+            if len(renders) == 1:
+                await asyncio.sleep(0.15)  # the first DM takes long to render, which used to come out of the second one's wait
+            return await real_render(payload, scope)
+        with mock.patch("captainguild.modules.statistics_tools.DM_SPACING", 0.2), mock.patch("captainguild.modules.statistics_tools.render_message", slow_first):
+            await self.finish(number)
+        self.assertEqual(len(times), 2)
+        self.assertGreaterEqual(times[1] - times[0], 0.2)
 
     async def test_a_long_stretch_of_members_to_skip_lets_other_work_run(self):
         number = await self.save()

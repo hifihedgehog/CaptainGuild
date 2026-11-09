@@ -1323,22 +1323,22 @@ class StatsTools:
                 run.note(f"Past {DM_LIMIT} DMs in one run, the rest of its notifications went to its channel.")
             else:
                 run.dms += 1
-                await self._dm_turn(guild.id)
-        problem = await self.send_notification(guild, note, role, adding, member=member)
+        problem = await self.send_notification(guild, note, role, adding, member=member, paced=True)
         if problem:
             run.note(problem)
 
     async def _dm_turn(self, guild_id: int) -> None:
-        """Waits until the server may send its next DM: DMs from one server go out at most one every DM_SPACING seconds."""
-        now = time.monotonic()
+        """Waits until the server may send its next DM: DMs from one server go out at most one every DM_SPACING seconds. Called right
+        before the send, and it waits until the clock has passed the server's next turn, since a sleep can end a little early."""
         ready = self._dm_next.get(guild_id, 0.0)
-        if ready > now:
+        while (now := time.monotonic()) < ready:
             await asyncio.sleep(ready - now)
-        self._dm_next[guild_id] = max(ready, now) + DM_SPACING
+        self._dm_next[guild_id] = now + DM_SPACING
 
     async def send_notification(self, guild: Any, note: dict, role: Any, adding: bool, *, member: Any = None, extra: dict | None = None,
-                                payload: dict | None = None) -> str | None:
-        """One notification, where the rule sends it. Returns the problem, or None when it went out."""
+                                payload: dict | None = None, paced: bool = False) -> str | None:
+        """One notification, where the rule sends it. Returns the problem, or None when it went out. A paced DM waits for the server's
+        next DM turn just before it's sent."""
         try:
             channel = await delivery.find_channel(guild, note["channel_id"]) if note.get("channel_id") else None
         except (discord.HTTPException, *TRANSIENT) as error:
@@ -1350,6 +1350,8 @@ class StatsTools:
             return None
         kwargs = messages.send_kwargs(rendered, allowed_mentions=mentions)
         if note["send"] in ("dm", "dm_fallback") and member is not None:
+            if paced:
+                await self._dm_turn(guild.id)
             try:
                 await member.send(**kwargs)
                 return None
