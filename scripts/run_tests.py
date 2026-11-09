@@ -4,9 +4,11 @@
     python scripts/run_tests.py --jobs 4       four at a time
     python scripts/run_tests.py --shard 2/4    the second of four even shares, for splitting a run across machines
     python scripts/run_tests.py tags levels    only modules whose names contain one of these words
+    python scripts/run_tests.py --module-seconds 900    stop a module after 15 minutes
 
-Each module runs as `python -m unittest tests.<module>` from the project folder. A module that fails has its whole output printed at the
-end, and the exit code is 1.
+Each module runs under unittest from the project folder. A module that fails has its whole output printed at the end, and the exit code
+is 1. A module still running at --module-seconds is stopped and counts as failed, and shortly before that it prints the stack of every
+thread it has, so a hang shows where it waits.
 """
 from __future__ import annotations
 
@@ -22,6 +24,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MODULE_SECONDS = 1800
+# Runs one module the way `python -m unittest tests.<module>` does, with every thread's stack printed at the given second.
+UNDER_WATCH = ("import faulthandler, sys, unittest\n"
+               "faulthandler.dump_traceback_later(float(sys.argv[2]), exit=False)\n"
+               "unittest.main(module=None, argv=['unittest', 'tests.' + sys.argv[1]])")
+
+
+def stacks_at(seconds: float) -> float:
+    """When a module prints its threads' stacks: a minute before it's stopped, or halfway for a short limit."""
+    return seconds - 60 if seconds > 120 else seconds / 2
 
 
 def modules(words: list[str] | None = None) -> list[str]:
@@ -41,16 +52,16 @@ def shares(names: list[str], count: int, size: dict[str, int]) -> list[list[str]
     return [sorted(share) for share in split]
 
 
-def run(name: str, folder: Path) -> tuple[str, int, float, str, Path]:
+def run(name: str, folder: Path, seconds: float = MODULE_SECONDS, root: Path = ROOT) -> tuple[str, int, float, str, Path]:
     started = time.monotonic()
     log = folder / f"{name}.log"
     with open(log, "w", encoding="utf-8", errors="replace") as out:
         try:
-            code = subprocess.run([sys.executable, "-m", "unittest", f"tests.{name}"], cwd=ROOT, stdout=out, stderr=subprocess.STDOUT,
-                                  timeout=MODULE_SECONDS).returncode
+            code = subprocess.run([sys.executable, "-X", "faulthandler", "-c", UNDER_WATCH, name, str(stacks_at(seconds))], cwd=root, stdout=out,
+                                  stderr=subprocess.STDOUT, timeout=seconds).returncode
         except subprocess.TimeoutExpired:
             code = 124
-            out.write(f"\nStopped after {MODULE_SECONDS} seconds.\n")
+            out.write(f"\nStopped after {seconds:g} seconds.\n")
     found = re.findall(r"^Ran (\d+) tests? in", log.read_text(encoding="utf-8", errors="replace"), re.M)
     return name, code, time.monotonic() - started, found[-1] if found else "?", log
 
@@ -60,6 +71,7 @@ def main() -> int:
     parser.add_argument("words", nargs="*", help="Run only modules whose names contain one of these words")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 2, help="Modules to run at once")
     parser.add_argument("--shard", default="1/1", help="Which share to run, such as 2/4")
+    parser.add_argument("--module-seconds", type=float, default=MODULE_SECONDS, help="Stop a module that runs longer than this")
     args = parser.parse_args()
     match = re.fullmatch(r"(\d+)/(\d+)", args.shard)
     if not match or not 1 <= int(match.group(1)) <= int(match.group(2)):
@@ -71,7 +83,7 @@ def main() -> int:
     failed = []
     total = 0
     with tempfile.TemporaryDirectory() as folder, concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
-        running = [pool.submit(run, name, Path(folder)) for name in chosen]
+        running = [pool.submit(run, name, Path(folder), args.module_seconds) for name in chosen]
         for done in concurrent.futures.as_completed(running):
             name, code, seconds, count, log = done.result()
             print(f"{'ok  ' if code == 0 else 'FAIL'} {name}: {count} tests, {seconds:.0f}s", flush=True)

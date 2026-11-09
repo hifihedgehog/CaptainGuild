@@ -37,7 +37,7 @@ jobs:
       - name: Install the version ranges
         if: matrix.python-version != '3.13'
         run: pip install -r requirements.txt
-      - run: python scripts/run_tests.py --shard ${{ matrix.shard }}/4
+      - run: python scripts/run_tests.py --shard ${{ matrix.shard }}/4 --module-seconds 900
 
   audit:
     runs-on: ubuntu-latest
