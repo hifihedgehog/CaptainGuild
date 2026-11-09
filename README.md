@@ -9,7 +9,22 @@
   <img src="https://img.shields.io/badge/discord.py-2.7.1-5865f2" alt="discord.py 2.7.1">
 </p>
 
-Captain Guild is a self-hosted Discord bot with a web dashboard. One process runs moderation, automod, logging, reports, reaction roles, custom commands, posts, greetings, levels, voice controls and server statistics, and its data sits in encrypted databases on your own machine.
+Captain Guild is a self-hosted Discord bot with a web dashboard. It does the work of Carl-bot, Premium features included, along with StatBot, Coffee Bot, MEE6's levels, Zira, Highlight, RoleLogic and ServerStats, in one process on your own machine. Every feature is there for every server, with no premium tier, and the data sits in encrypted databases you hold.
+
+## What it replaces
+
+Each of these is a separate hosted bot, and several keep features for paying servers. Captain Guild covers them all, from one dashboard.
+
+| Bot | In Captain Guild |
+|---|---|
+| Carl-bot, with Premium | Its moderation, automod, logging, reaction roles, tags and triggers, embeds, starboard, greetings, suggestions and feeds, plus what it keeps for Premium: levels, the bot's own picture, banner and bio in each server, auto purge, the automod drama channel, temporary reaction roles, lockdowns, farewell and birthday channels, starboard auto-star and a custom star emoji, and tags that run up to five commands and add up to five reactions. Twitch and YouTube alerts follow up to 200 channels each. |
+| StatBot, with its premium upgrades | Messages, voice time, members, statuses, games, emoji and invites, counted by the quarter hour. Cards and charts in Discord, a dashboard with heatmaps, member and channel drilldowns and CSV downloads, counter channels, stat roles, recounts of history from before the bot joined, merged channels and a statistics API. |
+| Coffee Bot | Reports of messages and members from the right-click menu, with the evidence, the person's history and a review thread for staff. |
+| MEE6's levels | XP for messages and voice, rank cards with custom backgrounds, role rewards and leaderboards. `/level mee6import` brings a server's MEE6 levels across. |
+| Zira | Reaction roles from reactions, buttons or menus, with limits, one-only groups, verify gates and timed roles. |
+| Highlight | `/highlight` sends a DM when a word you follow comes up in a channel you can see, with pauses, blocks and imports from another server. |
+| RoleLogic | Role rules that give and take roles from the roles a member holds, with a preview of who changes before a rule is saved. |
+| ServerStats | Counter channels whose names show live member, online, role and channel counts, dates and countdowns, statistics totals and follower counts. |
 
 ## What it does
 
