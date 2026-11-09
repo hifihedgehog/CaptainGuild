@@ -647,11 +647,11 @@ def label_places(spots: Sequence[tuple[int, float, float]], left: float, right: 
     return [(index, x, anchor) for index, x, anchor, _, _ in placed]
 
 
-def label_indexes(count: int, width: float, label_width: float) -> list[int]:
-    """Which buckets get a label under the axis, evenly spaced, the last one always."""
+def label_indexes(count: int, width: float, label_width: float, most: int | None = None) -> list[int]:
+    """Which buckets get a label under the axis, evenly spaced, the last one always. `most` caps how many, when the room alone allows more."""
     if count <= 0:
         return []
-    most = max(1, int(width // (label_width + 24)))
+    most = max(1, min(most or count, int(width // (label_width + 24))))
     if count <= most:
         return list(range(count))
     step = math.ceil((count - 1) / max(most - 1, 1))
@@ -692,9 +692,15 @@ class Plot:
                 card.text(self.left - 12, y, text, 20, color=DIM, anchor="rm")
         if labels:
             widest = max(card.measure(text, 19) for text in labels)
-            chosen = label_indexes(len(labels), self.right - self.left, widest)
-            spots = [(index, self.x(index), card.measure(labels[index], 19)) for index in chosen]
-            for index, x, anchor in label_places(spots, self.left, self.right, ends=not columns):
+            most = len(labels)
+            while True:  # fewer labels until every one chosen fits, so they stay evenly spaced
+                chosen = label_indexes(len(labels), self.right - self.left, widest, most)
+                placed = label_places([(index, self.x(index), card.measure(labels[index], 19)) for index in chosen], self.left, self.right,
+                                      ends=not columns)
+                if len(placed) == len(chosen) or len(chosen) <= 2:
+                    break
+                most = len(chosen) - 1
+            for index, x, anchor in placed:
                 card.text(x, y1 - 14, labels[index], 19, color=DIM, anchor=anchor)
 
     def x(self, index: float) -> float:

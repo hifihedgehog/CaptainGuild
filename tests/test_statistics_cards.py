@@ -166,6 +166,24 @@ class Drawing(unittest.TestCase):
         with_first = draw.label_places([(0, left, 90.0), (40, x(40), 90.0), (len(labels) - 1, right, 90.0)], left, right)
         self.assertEqual(with_first[0][1:], (left, "ls"), "a first bucket's label starts at the left edge")
 
+    def test_a_chart_spaces_its_axis_labels_evenly(self):
+        # 232 weekly buckets labeled by month: the chart takes fewer labels rather than leave a gap where one was crowded out.
+        labels = [f"{month} 2024" for month in ("May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")] * 29
+        card = draw.Card(400)
+        drawn = []
+        real_text = card.text
+
+        def text(x, y, value, size, **kwargs):
+            if value in labels:
+                drawn.append(x)
+            return real_text(x, y, value, size, **kwargs)
+        card.text = text
+        draw.Plot(card, (40, 20, 1240, 380), 100, labels, str)
+        steps = [round(b - a, 3) for a, b in zip(drawn, drawn[1:])]
+        self.assertGreaterEqual(len(drawn), 5)
+        self.assertLessEqual(max(steps[1:-1]) - min(steps[1:-1]), 0.01, "the labels between the ends sit evenly apart")
+        self.assertLessEqual(max(steps), 1.6 * min(steps[1:-1]), "no gap where a label went missing")
+
     def test_a_label_crowding_the_last_one_gives_way(self):
         placed = draw.label_places([(0, 0.0, 80.0), (10, 900.0, 80.0), (11, 990.0, 80.0)], 0.0, 1000.0)
         self.assertEqual([index for index, _, _ in placed], [0, 11])
