@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 import traceback
 
 import aiosqlite.core
@@ -21,6 +22,12 @@ def _remember_where(self, *args, **kwargs) -> None:
 def _report_open_connections() -> None:
     """Runs as the interpreter starts to wait for its threads, before it would wait on these forever."""
     stuck = [thread for thread in threading.enumerate() if thread.is_alive() and hasattr(thread, "opened_at")]
+    # A connection closed just before the end hands back its result a moment before its thread ends, so each gets a moment to finish.
+    # One left open waits on its queue forever and is still alive after it.
+    deadline = time.monotonic() + 5
+    for thread in stuck:
+        thread.join(max(0.0, deadline - time.monotonic()))
+    stuck = [thread for thread in stuck if thread.is_alive()]
     if not stuck:
         return
     sys.stdout.flush()  # os._exit below skips the usual flush, and the test results printed so far belong in the log
