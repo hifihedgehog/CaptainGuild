@@ -110,7 +110,7 @@ class RolePingTest(GatewayTest):
 
         self.turning_back_does(stuck)
         first = asyncio.ensure_future(self.ping())
-        await asyncio.wait_for(reached.wait(), 5)  # cancelled while turning it back off, however busy the machine is
+        await asyncio.wait_for(reached.wait(), 5)  # canceled while turning it back off, however busy the machine is
         first.cancel()
         await asyncio.gather(first, return_exceptions=True)
         self.assertEqual(await self.held(), 1)

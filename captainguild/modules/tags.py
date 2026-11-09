@@ -334,8 +334,15 @@ class Tags(Module):
         alias = await self.db.one("SELECT tag_id FROM tag_aliases WHERE guild_id = ? AND name = ?", (guild_id, name))
         return alias is not None
 
-    def _is_command(self, name: str) -> bool:
-        return name in self.bot.all_commands or name in SHORTCUTS
+    def _is_command(self, name: str, guild_id: int) -> bool:
+        """Whether typing this name runs a command in this server, where a tag by that name would never answer. A pack that steps aside
+        where it's off leaves its names to tags there."""
+        return self.bot.typed_command(name, guild_id) is not None or name in SHORTCUTS
+
+    async def shadowed(self, guild_id: int) -> list[str]:
+        """This server's tag names and aliases that typing now reaches a command with instead, such as a tag made while a command pack
+        was off. /tag get still runs them."""
+        return sorted(name for name in await self.all_names(guild_id) if self.bot.typed_command(name, guild_id) is not None)
 
     # ---- who may do what ----
 
@@ -531,7 +538,7 @@ class Tags(Module):
         problem = await self._word_problem(author, name, content)
         if problem:
             return problem
-        if self._is_command(name):
+        if self._is_command(name, guild.id):
             return f"`{name}` is one of the bot's commands, so a tag with that name would never run."
         if await self._name_taken(guild.id, name):
             return f"There's already a tag or alias called `{name}`."
@@ -734,7 +741,7 @@ class Tags(Module):
         except Invalid as error:
             await ctx.fail(str(error))
             return
-        if self._is_command(alias):
+        if self._is_command(alias, ctx.guild.id):
             await ctx.fail(f"`{alias}` is one of the bot's commands, so an alias with that name would never run.")
             return
         if await self._name_taken(ctx.guild.id, alias):
@@ -1036,7 +1043,8 @@ class Tags(Module):
             "id": row["id"], "name": row["name"], "summary": row["summary"], "cut": row["length"] > SUMMARY_MAX, "has_embed": bool(json.loads(row["extra"] or "{}").get("embeds")),
             "uses": row["uses"], "trusted": bool(row["trusted"]), **self._gone(req.guild_id, row),
         } for row in rows]
-        return {"tags": shown, "total": total, "page": page, "size": size, "prefixes": req.settings.get(req.guild_id, "core")["prefixes"], "can_trust": req.is_admin}
+        return {"tags": shown, "total": total, "page": page, "size": size, "prefixes": req.settings.get(req.guild_id, "core")["prefixes"], "can_trust": req.is_admin,
+                "shadowed": await self.shadowed(req.guild_id)}
 
     async def api_one(self, req: Req) -> dict:
         row = await self.db.one("SELECT * FROM tags WHERE guild_id = ? AND id = ?", (req.guild_id, req.int_param("tag_id")))
@@ -1075,8 +1083,8 @@ class Tags(Module):
             trusted += 1
         return {"trusted": trusted}
 
-    def _form_problem(self, name: str) -> ValidationError | None:
-        if self._is_command(name):
+    def _form_problem(self, name: str, guild_id: int) -> ValidationError | None:
+        if self._is_command(name, guild_id):
             return ValidationError({"name": f"{name} is one of the bot's commands, so a tag with that name would never run."})
         return None
 
@@ -1087,7 +1095,7 @@ class Tags(Module):
             raise ValidationError({"name": "A tag needs a name."})
         if not messages.has_content(form["message"]):
             raise ValidationError({"message": "Write some text or fill in an embed first."})
-        problem = self._form_problem(form["name"])
+        problem = self._form_problem(form["name"], req.guild_id)
         if problem:
             raise problem
         if await self._name_taken(req.guild_id, form["name"]):
@@ -1120,7 +1128,7 @@ class Tags(Module):
         # Trust goes with the words someone vouched for and who can run them, so anyone who couldn't vouch takes it away by changing either.
         trusted = form["trusted"] and (req.is_admin or all(form[key] == tag[key] for key in ("message", *_LIST_FIELDS)))
         if form["name"] != tag["name"]:
-            problem = self._form_problem(form["name"])
+            problem = self._form_problem(form["name"], req.guild_id)
             if problem:
                 raise problem
             if await self._name_taken(req.guild_id, form["name"], ignoring=tag["id"]):
@@ -1237,7 +1245,7 @@ class Tags(Module):
                 action, reason = "skip", "That name is already in use."
             elif existing is not None:
                 action = "replace"
-            elif self._is_command(tag["name"]):
+            elif self._is_command(tag["name"], req.guild_id):
                 reason = "That's also a command's name, so the tag can only run with /tag get."
             left_out = [name for name in tag["aliases"] if name in SHORTCUTS]
             if left_out and action != "skip":

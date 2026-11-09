@@ -14,7 +14,8 @@ and these hooks:
     def api(router)   registers the module's dashboard endpoints.
     roles_given, role_refusal, staff_roles, power_roles, posted_channels, pinged_channels, reading_refusal   tell the dashboard what a form's settings do, so it can refuse what the person saving couldn't do themselves.
 
-and these for restoring a backup: role_timers, child_links and row_limits, described below, and before_restore, on_guild_restored and after_restore.
+and these for restoring a backup: role_timers, child_links and row_limits, described below, and before_restore, on_guild_restored, after_restore and
+on_messages_restored.
 """
 from __future__ import annotations
 
@@ -40,6 +41,11 @@ class Module(commands.Cog):
     # every server together and another 100 in each server, so a pack costs the shared list nothing. Its settings need an `enabled` field,
     # and everything it does on its own, such as answering messages, checks `on_in` first.
     command_pack: ClassVar[bool] = False
+    # The other Python modules holding a pack's commands, when they're written in mixin classes in files of their own. Each one's commands go with the pack.
+    pack_modules: ClassVar[tuple[str, ...]] = ()
+    # A pack whose typed commands step aside where it's off, as if they weren't there, so a server's tags, triggers and short names with the
+    # same words answer them. Other packs answer that they're switched off. Statistics sets it, since its commands take common words such as top and me.
+    steps_aside_when_off: ClassVar[bool] = False
 
     # The most rows a server can have in a table, as the save paths enforce them. A restore holds to the same numbers, since a file passes through none of those paths and one server's rows can slow a feature for all of them.
     row_limits: ClassVar[dict[str, int]] = {}
@@ -74,6 +80,10 @@ class Module(commands.Cog):
 
     async def on_guild_restored(self, guild_id: int) -> None:
         """A backup was just put back for this server. Reload anything this module keeps in memory from its tables."""
+
+    async def on_messages_restored(self, guild_id: int) -> None:
+        """The backup's rows for the message database are back too, which comes after on_guild_restored and after_restore. A module whose rows
+        there must not come back as they were in the file changes them now."""
 
     async def after_restore(self, guild_id: int) -> None:
         """The restore that `before_restore` announced is over, whether it worked or not."""

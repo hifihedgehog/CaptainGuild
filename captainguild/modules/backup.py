@@ -112,7 +112,10 @@ SPECIAL_TABLES = {"guild_settings", "backup_snapshots"}
 # youtube_state is the polling place for one YouTube channel, shared by every server following it, and the next poll rebuilds it.
 # voicelink_held, autorole_waiting, raid_modes and raid_holds say how things stand right now, and an older picture would take roles from people or hand them out. Voice states, the rules screen and staff keep them right.
 # wiki_copies and wiki_pages hold copies of public wikis, shared by every server that reads the same one, and the next update downloads them again.
-GLOBAL_TABLES = {"kv", "web_sessions", "schema_steps", "sqlite_sequence", "youtube_state", "voicelink_held", "autorole_waiting", "raid_modes", "raid_holds", "wiki_copies", "wiki_pages"}
+# stat_user_settings holds each person's own statistics choices, which apply in every server, so no one server's file can carry or change them.
+# stat_api_keys holds the statistics API's keys: a restored file must never bring back a key someone deleted because it leaked.
+GLOBAL_TABLES = {"kv", "web_sessions", "schema_steps", "sqlite_sequence", "youtube_state", "voicelink_held", "autorole_waiting", "raid_modes", "raid_holds", "wiki_copies", "wiki_pages",
+                 "stat_user_settings", "stat_api_keys"}
 # A history keeps what's in it when a backup comes back: only what's missing gets added. Replacing the activity log would also let a file erase who changed what.
 # The same goes for what AI answers cost and how many each person asked for today: an older file must not lower either.
 # And for the forum posts welcomed and reminded: an older file must not forget one, or it would be welcomed or reminded twice.
@@ -1475,6 +1478,7 @@ class Backup(Module):
         if message_tables:
             job.stage = "Adding messages and logs"
             await self._restore_pass(guild_id, staged, catalog, message_tables, self.message_db, report, job)
+            await self._tell_modules("on_messages_restored", guild_id)
 
         job.stage = "Finishing up"
         added = sum(c.added for c in report.values())

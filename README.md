@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/discord.py-2.7.1-5865f2" alt="discord.py 2.7.1">
 </p>
 
-Captain Guild is a self-hosted Discord bot with a web dashboard. One process runs moderation, automod, logging, reports, reaction roles, custom commands, posts, greetings, levels and voice controls, and its data sits in encrypted databases on your own machine.
+Captain Guild is a self-hosted Discord bot with a web dashboard. One process runs moderation, automod, logging, reports, reaction roles, custom commands, posts, greetings, levels, voice controls and server statistics, and its data sits in encrypted databases on your own machine.
 
 ## What it does
 
@@ -35,23 +35,24 @@ Captain Guild is a self-hosted Discord bot with a web dashboard. One process run
 | Channel archive | Copies a channel or a forum, threads included, into another channel under each author's name, and picks up where it stopped. |
 | Entry giveaways | A channel or forum where each member's first message is their one entry, and a draw that gives each member one chance. |
 | Forum messages | A welcome in each new post of the forums you pick, one reminder in a post with no message for six days, and a Mark as Solved button and Mark as Solution menu that tag and close a post. |
+| Statistics | Messages, voice time, members with joins and leaves, invites, emoji, online counts and the games people play, kept per quarter hour. Cards and charts in Discord in six languages, and dashboard pages with rankings, heatmaps, member and channel drilldowns and CSV downloads. A server can open a public page. Counter channels keep live numbers in the channel list, and stat roles give or take roles by activity. A recount reads earlier messages back from Discord, merged channels keep a rebuilt channel's history together, and an API with keys serves the numbers to other tools. Insights cover moderation, help forums and how many newcomers stay. |
 | Wiki answers | Answers members' questions from copies of the wikis and documentation sites you name, with links to the pages it drew from. It also plans projects with a sketch, searches the web, writes printable OpenSCAD models, and answers new forum posts. It runs on the host's own Anthropic API key, in the servers the host names, with a daily limit for each person and a monthly budget a server can set. |
 
 Each server sets all of this on its own dashboard, and a Quick setup page covers the common choices. The [docs page](captainguild/web/static/docs.html) lists every command and who can run it.
 
-Collaborative messages, the message mover, translation, bookmarks, RSS feeds, the channel archive, entry giveaways, wiki answers and forum messages are command packs. A server sees a pack's commands only once someone who manages the server switches it on from the dashboard.
+Collaborative messages, the message mover, translation, bookmarks, RSS feeds, the channel archive, entry giveaways, wiki answers, forum messages and statistics are command packs. A server sees a pack's commands only once someone who manages the server switches it on from the dashboard.
 
 ## Your data
 
 Two [SQLCipher](https://github.com/sqlcipher/sqlcipher) databases hold everything, encrypted with AES-256 under keys derived from `MASTER_KEY`, which stays out of the databases and their copies. Message text is kept 30 days unless a server changes that. No data goes anywhere you didn't send it: the bot talks to Discord, and to an outside service only when someone uses a feature that needs one. [THIRD_PARTY.md](THIRD_PARTY.md) lists those services and what each receives.
 
-A server's staff can download its whole setup and history as one file from the dashboard and put it back, and the bot keeps scheduled snapshots of each server. The [privacy page](captainguild/web/static/privacy.html) lists what's stored and for how long. Any member can type `/my_data` to see what the bot holds about them, download it, and delete what's theirs to delete.
+A server's staff can download its whole setup and history as one file from the dashboard and put it back, and the bot keeps scheduled snapshots of each server. The [privacy page](captainguild/web/static/privacy.html) lists what's stored and for how long. Any member can type `/my_data` to see what the bot holds about them, download it, and delete what's theirs to delete, and `/stats privacy` takes their name off their statistics in every server.
 
 ## Host it yourself
 
 You need Python 3.12 or newer and a reverse proxy with HTTPS. The pinned install from `requirements.lock` takes Python 3.13.
 
-1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications). Turn on **Server Members Intent** and **Message Content Intent**, and leave Presence off. Turn off **Public Bot**, so only you can add it to a server. On the OAuth2 page, add `https://your.site/login/callback` under Redirects, and copy the client secret.
+1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications). Turn on **Server Members Intent** and **Message Content Intent**, and **Presence Intent** for the online counts and game tracking in statistics. Turn off **Public Bot**, so only you can add it to a server. On the OAuth2 page, add `https://your.site/login/callback` under Redirects, and copy the client secret.
 2. Install it:
    ```sh
    git clone https://github.com/hifihedgehog/CaptainGuild.git
@@ -75,6 +76,8 @@ You need Python 3.12 or newer and a reverse proxy with HTTPS. The pinned install
 Without a client secret, the site signs people in with a private link from the bot's `/dashboard` command instead.
 
 Wiki answers needs an Anthropic API key in `.env` as `ANTHROPIC_API_KEY`, and the bot started with `--answers-servers` followed by the IDs of the servers that may use it, separated by commas. Its sketches need the cairo library on the machine, and its models need `openscad`, `xvfb-run` and `prlimit`.
+
+Statistics cards draw emoji in color when the machine has Noto Color Emoji: `google-noto-emoji-color-fonts` on AlmaLinux and Fedora, `fonts-noto-color-emoji` on Debian and Ubuntu.
 
 ### Getting the data back
 

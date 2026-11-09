@@ -512,7 +512,7 @@ class MyDataTest(BotTest):
         self._clients.append(client)
         data = await (await client.get("/api/my-data")).json()
         here = next(server for server in data["servers"] if str(server["id"]) == str(self.guild.id))
-        self.assertIn({"key": "translation", "label": "Translation language", "count": 1}, here["sections"])
+        self.assertIn({"key": "translation", "label": "Translation language", "count": 1, "everywhere": False}, here["sections"])
         download = await (await client.get("/api/my-data/download")).json()
         self.assertEqual({row["language"] for row in download["tables"]["translate_languages"]}, {"ES", "FR"})
         response = await client.post("/api/my-data/delete", json={"guild_id": str(self.guild.id), "section": "translation"})

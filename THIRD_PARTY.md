@@ -13,7 +13,7 @@ Each project's copyright notice and license text is in `captainguild/web/static/
 | [Unicode](https://www.unicode.org/) emoji names, in that list | | Unicode, Inc. | Unicode License V3 | `captainguild/web/static/vendor/emoji.json` |
 | [Roboto](https://fonts.google.com/specimen/Roboto), from [Fontsource](https://github.com/fontsource/fontsource) | 5.1.0 | Google Inc. | Apache 2.0 | `captainguild/web/static/vendor/fonts/roboto-*` |
 | [Poppins](https://fonts.google.com/specimen/Poppins), from [Fontsource](https://github.com/fontsource/fontsource) | 5.1.0 | The Poppins Project Authors | SIL Open Font License 1.1 | `captainguild/web/static/vendor/fonts/poppins-*` |
-| [DejaVu Sans Bold](https://dejavu-fonts.github.io/), for rank cards | 2.37 | Bitstream, Inc. and Tavmjong Bah, with the DejaVu changes in the public domain | Bitstream Vera and Arev font licenses | `captainguild/assets/fonts/DejaVuSans-Bold.ttf`, with `DejaVu-LICENSE.txt` beside it |
+| [DejaVu Sans](https://dejavu-fonts.github.io/) and DejaVu Sans Bold, for rank cards and statistics cards, from the [2.37 release](https://github.com/dejavu-fonts/dejavu-fonts/releases/tag/version_2_37) | 2.37 | Bitstream, Inc. and Tavmjong Bah, with the DejaVu changes in the public domain | Bitstream Vera and Arev font licenses | `captainguild/assets/fonts/DejaVuSans.ttf` and `DejaVuSans-Bold.ttf`, with `DejaVu-LICENSE.txt` beside them |
 
 ## Python packages
 
@@ -47,7 +47,8 @@ The bot calls these only when someone uses the matching feature. Each one sees t
 | Service | Used for | What it receives |
 |---|---|---|
 | [Twitch Helix API](https://dev.twitch.tv/docs/api/) (`id.twitch.tv`, `api.twitch.tv`) | Live stream alerts | The client ID and secret the server enters, and the channels it follows |
-| [YouTube](https://www.youtube.com/) feeds and channel pages | New video alerts | The channels the server follows |
+| [YouTube](https://www.youtube.com/) feeds and channel pages | New video alerts, and subscriber counts on counter channels | The channels the server follows, and the channel a counter names, at most once an hour for each |
+| [Instagram](https://www.instagram.com/) (`www.instagram.com`) and [TikTok](https://www.tiktok.com/) (`www.tiktok.com`) profile pages | Follower counts on counter channels | The account a counter names, in a request for its public profile page, at most once an hour for each account |
 | [GamerPower API](https://www.gamerpower.com/api-read) (`gamerpower.com`) | Free game alerts | Nothing from the server |
 | [CheapShark API](https://apidocs.cheapshark.com/) (`cheapshark.com`) | Game deal alerts | Nothing from the server |
 | [MEE6 public leaderboards](https://mee6.xyz/) (`mee6.xyz`) | Importing XP, when a server asks for it | The server's ID |

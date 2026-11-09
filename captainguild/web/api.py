@@ -30,7 +30,9 @@ from ..core.validate import Invalid, ValidationError
 
 JS_SAFE_INT = 2 ** 53 - 1
 MAX_JSON_BYTES = 1024 * 1024
-ACCESS_ORDER = {"staff": 1, "full": 2}
+# "viewer" routes are the statistics pages, which a server can open to everyone in it. Whoever else gets through is the statistics
+# module's call (its viewer_level), and only those routes ask it.
+ACCESS_ORDER = {"viewer": 0, "staff": 1, "full": 2}
 
 
 class ApiError(Exception):
@@ -80,6 +82,7 @@ class User:
     id: int
     name: str
     avatar: str | None
+    mfa: bool = False  # two-factor authentication on the account, as Discord said at sign-in
 
 
 class Req:
@@ -207,6 +210,26 @@ class Req:
 
     async def record(self, action: str, *, detail: str | None = None, module: str | None = None, before: Any = None, after: Any = None) -> None:
         await self.bot.activity_log.record(self.guild_id, self.actor, action, detail=detail, module=module, before=before, after=after)
+
+
+class PublicReq:
+    """A call to a page a server made public: no session, no person, reads only."""
+
+    access = "public"
+    user = None
+
+    def __init__(self, request: web.Request, bot: Any, guild_id: int):
+        self.request = request
+        self.bot = bot
+        self.guild_id = guild_id
+        self.ops = bot.ops
+
+    @property
+    def query(self) -> Any:
+        return self.request.query
+
+    def param(self, name: str) -> str:
+        return self.request.match_info[name]
 
 
 Handler = Callable[[Req], Awaitable[Any]]

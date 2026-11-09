@@ -1051,29 +1051,29 @@ class ChannelEventTest(Base):
         self.assertEqual(embed["fields"][1], {"name": "After", "value": "**Name:** renamed", "inline": True})
 
     async def test_a_stat_counter_bots_renames_are_dropped(self):
-        counter = FakeMember(self.guild, "statbot", bot=True)
+        counter = FakeMember(self.guild, "countbot", bot=True)
         await self.configure(rename_ignored_bots=[counter.id])
         self.bot.audit.feed(self.audit(Actions.channel_update, user=counter, target=self.channel, after={"name": "Members: 2"}))
         await self.logs.on_guild_channel_update(self.rename(self.channel, "Members: 2"), self.channel)
         self.assertEqual(self.posted, [])
 
     async def test_the_same_bot_changing_anything_else_is_logged(self):
-        counter = FakeMember(self.guild, "statbot", bot=True)
+        counter = FakeMember(self.guild, "countbot", bot=True)
         await self.configure(rename_ignored_bots=[counter.id])
         self.bot.audit.feed(self.audit(Actions.channel_update, user=counter, target=self.channel))
         await self.logs.on_guild_channel_update(self.rename(self.channel, "Members: 2", topic="also this"), self.channel)
         self.assertEqual(len(self.posted), 1)
-        self.assertIn("(statbot)", self.posted[0][1]["description"])
+        self.assertIn("(countbot)", self.posted[0][1]["description"])
 
     async def test_a_rename_by_anyone_else_is_logged_and_named(self):
-        counter = FakeMember(self.guild, "statbot", bot=True)
+        counter = FakeMember(self.guild, "countbot", bot=True)
         await self.configure(rename_ignored_bots=[counter.id])
         self.bot.audit.feed(self.audit(Actions.channel_update, target=self.channel))
         await self.logs.on_guild_channel_update(self.rename(self.channel, "renamed"), self.channel)
         self.assertIn(f"**By:** <@{self.mod.id}> (mod)", self.posted[0][1]["description"])
 
     async def test_without_an_audit_entry_a_rename_is_logged(self):
-        counter = FakeMember(self.guild, "statbot", bot=True)
+        counter = FakeMember(self.guild, "countbot", bot=True)
         await self.configure(rename_ignored_bots=[counter.id])
         await self.logs.on_guild_channel_update(self.rename(self.channel, "unknown hand"), self.channel)
         self.assertEqual(len(self.posted), 1)

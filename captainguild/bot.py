@@ -68,6 +68,8 @@ CORE_MIGRATIONS = [
         PRIMARY KEY (guild_id, day, command, user_id)
     );
     """,
+    # Whether the account had two-factor authentication when it signed in with Discord. A sign-in link from the bot can't tell, so it stays 0.
+    "ALTER TABLE web_sessions ADD COLUMN mfa INTEGER NOT NULL DEFAULT 0;",
 ]
 
 FILE_RESTORED_KEY = "file_restored_at"
@@ -103,11 +105,11 @@ TAB_OF = {"misc": "Misc", "stats": "Stats", "games": "Games"}
 
 
 class Bot(commands.Bot):
-    def __init__(self, db: Database, message_db: Database, *, public_url: str = "", read_message_text: bool = True) -> None:
+    def __init__(self, db: Database, message_db: Database, *, public_url: str = "", read_message_text: bool = True, read_presences: bool = False) -> None:
         intents = discord.Intents.default()
         intents.members = True
         intents.message_content = read_message_text
-        intents.presences = False
+        intents.presences = read_presences  # statistics read statuses and games with it, and the rest of the bot works without it
         super().__init__(
             command_prefix=self._prefix_for,
             intents=intents,
@@ -123,6 +125,7 @@ class Bot(commands.Bot):
         self.message_db = message_db
         self.public_url = public_url
         self.reads_message_text = read_message_text
+        self.reads_presences = read_presences
         self.sign_in_links = SignInLinks()
         self.started_at = time.time()
         self.activity_log = Activity(db)
@@ -167,7 +170,8 @@ class Bot(commands.Bot):
             await self.db.migrate(f"module:{module.key}", list(module.migrations))
             await self.message_db.migrate(f"module:{module.key}", list(module.message_migrations))
             if module.command_pack:
-                self._pack_keys[type(module).__module__] = module.key  # so the tree holds its commands apart from the start
+                for name in (type(module).__module__, *module.pack_modules):
+                    self._pack_keys[name] = module.key  # so the tree holds its commands apart from the start
             await self.add_cog(module)
             self.modules.append(module)
         for module in self.modules:
@@ -308,7 +312,7 @@ class Bot(commands.Bot):
 
     def _take_pack_commands(self) -> None:
         """A command pack's slash commands and menus leave the list every server shares, to go into each server that switches the pack on."""
-        packs = {type(module).__module__: module for module in self.modules if module.command_pack}
+        packs = {name: module for module in self.modules if module.command_pack for name in (type(module).__module__, *module.pack_modules)}
 
         async def switched(guild_id: int, _settings: dict) -> None:
             self.sync_server_soon(guild_id)
@@ -379,6 +383,8 @@ class Bot(commands.Bot):
         if message.author.bot or message.guild is None:
             return
         ctx = await self.get_context(message)
+        if ctx.command is not None and not self.runs_in(ctx.command, message.guild.id):
+            ctx.command = None  # a pack switched off here that steps aside, so its word reaches tags and short names as if it weren't a command
         if ctx.command is not None:
             await self.invoke(await self._through_long_shortcut(ctx))
             return
@@ -405,8 +411,19 @@ class Bot(commands.Bot):
     async def _run_shortcut(self, ctx: Context) -> None:
         """A short name for a command in a group. It runs as if the person had typed the whole thing, so the server's rules for that command apply."""
         fresh = await self._through_long_shortcut(ctx)
-        if fresh.command is not None:
+        if fresh.command is not None and self.runs_in(fresh.command, ctx.guild.id):
             await self.invoke(fresh)
+
+    @staticmethod
+    def runs_in(command: Any, guild_id: int | None) -> bool:
+        """Whether a typed command answers in this server. One from a pack that steps aside where it's off doesn't, as if it weren't there."""
+        cog = getattr(command, "cog", None)
+        return not (isinstance(cog, Module) and cog.command_pack and cog.steps_aside_when_off and not cog.on_in(guild_id))
+
+    def typed_command(self, name: str, guild_id: int | None) -> Any:
+        """The command a typed word runs in this server, or None, the way process_commands reads it."""
+        command = self.all_commands.get(name)
+        return command if command is not None and self.runs_in(command, guild_id) else None
 
     async def _through_long_shortcut(self, ctx: Context) -> Context:
         """The line spelled the long way, by core.shortcuts.expand_line. The first word can be a real command, so this looks before it runs."""
@@ -562,10 +579,13 @@ class Bot(commands.Bot):
             category = TAB_OF.get(command.qualified_name) or (command.cog.category if isinstance(command.cog, Module) else "Misc")
             subcommands = []
             names = set(command.aliases) | shortcuts.get(command.qualified_name, set())
+            slash = command.extras.get("slash_name")  # a typed group whose slash form goes by another name, such as statsinfo and /info
             if isinstance(command, commands.Group):
                 subcommands = sorted(c.qualified_name for c in command.walk_commands() if not isinstance(c, commands.Group))
                 for child in command.walk_commands():
                     names |= set(child.aliases)
+                    if slash and not isinstance(child, commands.Group):
+                        names.add(f"/{slash} {child.name}")
             children = [self._catalog_leaf(c) for c in sorted(command.walk_commands(), key=lambda c: c.qualified_name) if not isinstance(c, commands.Group)] if isinstance(command, commands.Group) else []
             own = self._catalog_leaf(command)
             # A group's own function runs only when it has a fallback, so a group with none is judged by its subcommands alone.

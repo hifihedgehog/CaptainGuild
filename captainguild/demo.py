@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import random
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -16,6 +17,8 @@ from aiohttp import web
 from .bot import Bot
 from .core import messages
 from .core.ops import MessageGone, OpsError
+from .core.stats import carryover, store
+from .core.stats.timeframe import SLOT_SECONDS, slot_of, slot_time
 from .core.outside import OutsideError, Reply
 from .core.settings import Actor
 from .db import Database
@@ -478,6 +481,121 @@ async def _seed_samples(bot: Bot) -> None:
     await db.run("INSERT INTO triggers (guild_id, match_type, phrase, content, created_by, created_at, updated_at) VALUES (?, 0, 'server ip', 'The address is in the welcome channel.', ?, ?, ?)", (GUILD, USER, now, now))
 
 
+DEMO_PEOPLE = ("printer_fan", "filament_friend", "layer_lover", "nozzle_nerd", "bed_leveler", "resin_rookie", "slicer_sage", "spool_keeper", "brim_builder",
+               "infill_ivy", "raft_rider", "support_sam", "purge_tower", "gcode_gus", "hotend_hal", "petg_pat", "abs_abby", "tpu_tom", "pla_paula", "silk_sid")
+
+
+async def _seed_statistics(bot: Bot) -> None:
+    """Four months of statistics for the demo server, shaped like a busy day and week, so every statistics page has something on it.
+    Everyone counts only between joining and leaving. The server's statistics are public, so /stats/{server} works here too, and it has
+    one saved preset."""
+    rng = random.Random(42)
+    db = bot.message_db
+    now = time.time()
+    now_slot = slot_of(now)
+    days = 120
+    first = now_slot - days * 96
+    channels = {row["name"]: row for row in bot.ops.channels}
+    text = [channels[name]["id"] for name in ("general", "help-desk", "introductions", "suggestions", "bug-reports", "announcements")]
+    text_weights = [8, 6, 2, 1.5, 1.2, 0.4]
+    voice = [channels["Lounge"]["id"], channels["Gaming"]["id"]]
+    people = [900000000000000301 + index for index in range(len(DEMO_PEOPLE))]
+    weights = [1 / (index + 1) ** 0.8 for index in range(len(people))]
+    gone = people[-3:]  # three of them have left since
+    # When each person joined and, for the three, left. Someone also in the demo's member list joined when that list says.
+    listed = {member["id"]: member for member in bot.ops.members}
+    joined = {user_id: listed[user_id]["joined_at"] if user_id in listed else now - rng.uniform(150, 600) * 86400 for user_id in people}
+    left = {user_id: now - rng.uniform(1, 20) * 86400 for user_id in gone}
+    joined.update({member["id"]: member["joined_at"] for member in bot.ops.members})
+
+    def here(user_id: int, slot: int) -> bool:
+        """Whether someone was a member during this quarter hour."""
+        start = slot_time(slot)
+        return joined.get(user_id, 0) <= start + SLOT_SECONDS and start < left.get(user_id, now + SLOT_SECONDS)
+    await db.many("INSERT OR REPLACE INTO stat_channels (guild_id, channel_id, name, type, parent_id, created_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, NULL)",
+                  [(GUILD, row["id"], row["name"], row["type"], row["parent_id"], now - 400 * 86400) for row in bot.ops.channels])
+    await db.run("INSERT OR REPLACE INTO stat_channels (guild_id, channel_id, name, type, parent_id, created_at, deleted_at) VALUES (?, 900000000000009001, 'old-showcase', 0, NULL, ?, ?)",
+                 (GUILD, now - 300 * 86400, now - 40 * 86400))
+    await db.many("INSERT OR REPLACE INTO stat_people (guild_id, user_id, name, display_name, nick, avatar, bot, created_at, joined_at, left_at, seen_at) VALUES (?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?, ?)",
+                  [(GUILD, user_id, name, name.replace("_", " ").title(), now - 900 * 86400, joined[user_id], left.get(user_id), now)
+                   for user_id, name in zip(people, DEMO_PEOPLE)])
+    for member in bot.ops.members:
+        if member["id"] in joined and member["id"] in people:
+            continue  # written above, with the same join
+        await db.run("INSERT OR REPLACE INTO stat_people (guild_id, user_id, name, display_name, nick, avatar, bot, created_at, joined_at, left_at, seen_at) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, NULL, ?)",
+                     (GUILD, member["id"], member["name"], member["display_name"], int(member["bot"]), member["created_at"], member["joined_at"], now))
+    messages, sessions, emoji, members, statuses = [], [], [], [], []
+    count = 4100
+    for slot in range(first, now_slot + 1):
+        local_hour = ((slot % 96) // 4 - 8) % 24  # Pacific time, roughly
+        weekend = ((slot // 96) + 4) % 7 >= 5
+        busy = (0.25 + 0.75 * max(0.0, 1 - abs(local_hour - 15) / 9)) * (1.25 if weekend else 1.0) * (0.75 + 0.5 * (slot - first) / (now_slot - first))
+        for _ in range(rng.choices((0, 1, 2, 3), (1, busy * 2, busy, busy / 2))[0]):
+            who = rng.choices(people, weights)[0]
+            if not here(who, slot):
+                continue
+            place = rng.choices(text, text_weights)[0]
+            messages.append((GUILD, slot, place, who, 0, rng.randint(1, 6)))
+            reactor = rng.choices(people, weights)[0]
+            if rng.random() < 0.3 and here(reactor, slot):
+                key = rng.choice(("u:\N{THUMBS UP SIGN}", "u:\N{FACE WITH TEARS OF JOY}", "u:\N{PARTY POPPER}", "c:900000000000002000", "u:\N{HEAVY BLACK HEART}"))
+                emoji.append((GUILD, slot, place, reactor, who, key, rng.choice((store.REACTION, store.REACTION, store.IN_TEXT, store.SELF_REACTION)), 0, 1))
+        if rng.random() < 0.02 and here(USER + 2, slot):
+            messages.append((GUILD, slot, text[0], USER + 2, store.BOT, rng.randint(1, 4)))
+        talker = rng.choices(people, weights)[0]
+        if rng.random() < busy * 0.25 and here(talker, slot):
+            sessions.append((GUILD, slot, rng.choice(voice), talker, rng.choice((store.TALKING, store.TALKING, store.SELF_MUTED, store.AFK)), 0, rng.randint(120, 900)))
+        if slot % 4 == 0:
+            joins = 1 if rng.random() < 0.06 else 0
+            leaves = 1 if rng.random() < 0.025 else 0
+            count += joins - leaves
+            members.append((GUILD, slot, count, count - 12, 12, joins, leaves))
+            online = int(count * (0.08 + 0.1 * busy))
+            statuses.append((GUILD, slot, 1, int(online * 0.6), int(online * 0.25), int(online * 0.15), 4, 1, 0, 0, 0))
+    await db.many("INSERT OR IGNORE INTO stat_messages (guild_id, slot, channel_id, user_id, flags, count) VALUES (?, ?, ?, ?, ?, ?)", messages)
+    await db.many("INSERT OR IGNORE INTO stat_voice (guild_id, slot, channel_id, user_id, state, flags, seconds) VALUES (?, ?, ?, ?, ?, ?, ?)", sessions)
+    await db.many("INSERT OR IGNORE INTO stat_emoji (guild_id, slot, channel_id, user_id, target_id, emoji, use, flags, count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", emoji)
+    await db.many("INSERT OR IGNORE INTO stat_members (guild_id, slot, members, humans, bots, joins, leaves) VALUES (?, ?, ?, ?, ?, ?, ?)", members)
+    await db.many("INSERT OR IGNORE INTO stat_status (guild_id, slot, samples, online, idle, dnd, bot_online, bot_idle, bot_dnd, present_samples, present) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", statuses)
+    await db.many("INSERT OR REPLACE INTO stat_emoji_info (guild_id, emoji, name, animated, managed, restricted, available, created_at, deleted_at) VALUES (?, ?, ?, ?, 0, 0, 1, ?, ?)",
+                  [(GUILD, "c:900000000000002000", "party", 0, now - 500 * 86400, None), (GUILD, "c:900000000000002001", "benchy", 1, now - 200 * 86400, None),
+                   (GUILD, "c:900000000000002002", "old_logo", 0, now - 600 * 86400, now - 30 * 86400)])
+    games = [(store.PLAYING, 356875570916753438, "Minecraft"), (store.PLAYING, 1000000000000000001, "Blender"), (store.LISTENING, None, "Spotify")]
+    for kind, application, name in games:
+        number = store.activity_id(kind, application, name)
+        await db.run("INSERT OR REPLACE INTO stat_activity_names (guild_id, activity_id, kind, application_id, name, verified, first_seen) VALUES (?, ?, ?, ?, ?, 1, ?)",
+                     (GUILD, number, kind, application, name, now - days * 86400))
+        players = [(slot, rng.choices(people, weights)[0]) for slot in range(first, now_slot, rng.randint(9, 16))]
+        await db.many("INSERT OR IGNORE INTO stat_activities (guild_id, slot, user_id, activity_id, flags, seconds) VALUES (?, ?, ?, ?, 0, ?)",
+                      [(GUILD, slot, who, number, rng.randint(300, 900)) for slot, who in players if here(who, slot)])
+    codes = [("website", USER, channels["welcome"]["id"]), ("printfarm", 900000000000000301, channels["general"]["id"]), ("summer", 900000000000000302, channels["welcome"]["id"])]
+    await db.many("INSERT OR REPLACE INTO stat_invites (guild_id, code, inviter_id, channel_id, uses, max_uses, max_age, temporary, vanity, created_at, deleted_at) VALUES (?, ?, ?, ?, ?, NULL, NULL, 0, 0, ?, NULL)",
+                  [(GUILD, code, inviter, channel, rng.randint(20, 200), now - 200 * 86400) for code, inviter, channel in codes])
+    joins = []
+    for index in range(160):
+        at = now - rng.uniform(0, days) * 86400
+        code, inviter, _ = rng.choice(codes)
+        facts = store.JOIN_NO_AVATAR if rng.random() < 0.15 else 0
+        joins.append((GUILD, 910000000000000000 + index, at, code if rng.random() > 0.1 else None, inviter, at - rng.uniform(0.1, 900) * 86400, facts, None,
+                      at + 3600 if rng.random() < 0.12 else None))
+    await db.many("INSERT OR IGNORE INTO stat_joins (guild_id, user_id, at, code, inviter_id, account_created, facts, role_met_at, left_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", joins)
+    await db.many("INSERT OR REPLACE INTO stat_people (guild_id, user_id, name, display_name, nick, avatar, bot, created_at, joined_at, left_at, seen_at) VALUES (?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?, ?)",
+                  [(GUILD, row[1], f"newcomer{index}", f"Newcomer {index}", row[5], row[2], row[8], now) for index, row in enumerate(joins)])
+    admin = Actor(USER, "Demo Admin")
+    await bot.settings.save(GUILD, "statistics", {"enabled": True, "timezone": "America/Los_Angeles", "lookback": {"mode": "days", "days": 30, "since": None},
+                                                  "dashboard_access": "public", "invite_min_account_minutes": 4320, "invite_labels": {"website": "Website"},
+                                                  "track_activities": True}, actor=admin)
+    await carryover.import_presets(bot.db, GUILD, [{"name": "Two months, weekly", "kind": "filters", "query": {
+        "period": "2mo", "interval": "week", "unit": "days", "include": "humans", "stat": "messages"}}], actor_id=USER, now=now)
+    await bot.db.run("INSERT OR REPLACE INTO stat_panels (guild_id, user_id, panels, updated_at) VALUES (?, ?, ?, ?)", (GUILD, USER, json.dumps([
+        {"title": "Messages this week", "stat": "messages", "value": "sum", "unique": "members", "percent": False, "period": "7d", "interval": "day"},
+        {"title": "Members, four weeks", "stat": "members", "value": "change", "unique": "members", "percent": True, "period": "4w", "interval": "day"},
+        {"title": "Active members", "stat": "messages", "value": "unique", "unique": "members", "percent": False, "period": "30d", "interval": "day"},
+        {"title": "Voice per day", "stat": "voice", "value": "average", "unique": "members", "percent": False, "period": "14d", "interval": "day"},
+        {"title": "Channels in use", "stat": "messages", "value": "unique", "unique": "channels", "percent": True, "period": "30d", "interval": "day"},
+    ]), now))
+
+
 async def build_demo(data_dir: Path) -> tuple[Bot, Any, list]:
     db = Database(data_dir / "demo-main.db", DEMO_KEY)
     message_db = Database(data_dir / "demo-messages.db", DEMO_KEY)
@@ -494,6 +612,7 @@ async def build_demo(data_dir: Path) -> tuple[Bot, Any, list]:
         if hasattr(module, "outside"):
             module.outside = DemoOutside()
     await _seed_samples(bot)
+    await _seed_statistics(bot)
     app = build_app(bot, session_key=b"demo" * 8, public_url="", secure_cookies=False, demo_user=User(USER, "Demo Admin", "/static/img/logo.svg"))
     app.middlewares.append(_local_only)
     return bot, app, [db.close, message_db.close]

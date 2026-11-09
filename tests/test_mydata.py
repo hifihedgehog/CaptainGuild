@@ -14,6 +14,7 @@ from captainguild.modules.logs import Logs
 from captainguild.modules.moderation import Moderation
 from captainguild.modules.mydata import BY_KEY, KEPT, SECTIONS, MyData
 from captainguild.modules.utilities import Utilities
+from captainguild.modules.statistics import Statistics
 from captainguild.modules.entrygiveaways import EntryGiveaways
 from captainguild.modules.voice import Voice
 from captainguild.modules.translation import Translation
@@ -43,8 +44,9 @@ class EveryTableTest(BotTest):
 
     async def test_every_section_points_at_a_real_table_and_column(self):
         for section in SECTIONS:
+            database = self.message_db if section.database == "messages" else self.db
             for table, column in section.tables:
-                columns = [c["name"] for c in await self.db.all(f"PRAGMA table_info('{table}')")]
+                columns = [c["name"] for c in await database.all(f"PRAGMA table_info('{table}')")]
                 self.assertIn(column, columns, table)
                 self.assertIn("guild_id", columns, table)
             if section.module:
@@ -206,3 +208,26 @@ class PageTest(Case):
         response = await client.get("/my-data")
         self.assertEqual(response.status, 200)
         self.assertIn("/static/js/mydata.js", await response.text())
+
+
+class PanelsTest(BotTest):
+    """Dashboard panels are someone's own rows in a table the Statistics module makes. They show, download and delete by server."""
+    modules = [Greetings, Levels, Logs, Moderation, Utilities, Fun, Voice, Translation, EntryGiveaways, Statistics, MyData]
+
+    async def test_panels_show_download_and_delete_in_one_server(self):
+        you = self.member.id
+        for guild_id, user_id in ((self.guild.id, you), (999, you), (self.guild.id, self.mod.id)):
+            await self.db.run("INSERT INTO stat_panels (guild_id, user_id, panels, updated_at) VALUES (?, ?, '[]', 1)", (guild_id, user_id))
+        app = build_app(self.bot, session_key=b"t" * 32, public_url="", secure_cookies=False, demo_user=User(you, "member", None))
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        self._clients.append(client)
+        data = await (await client.get("/api/my-data")).json()
+        here = next(s for s in data["servers"] if str(s["id"]) == str(self.guild.id))
+        self.assertIn({"key": "statpanels", "label": BY_KEY["statpanels"].label, "count": 1, "everywhere": False}, here["sections"])
+        download = await (await client.get("/api/my-data/download")).json()
+        self.assertEqual(sorted(str(row["guild_id"]) for row in download["tables"]["stat_panels"]), sorted([str(self.guild.id), "999"]))  # IDs past 2**53 come as text
+        response = await client.post("/api/my-data/delete", json={"guild_id": str(self.guild.id), "section": "statpanels"})
+        self.assertEqual(response.status, 200, await response.text())
+        left = await self.db.all("SELECT guild_id, user_id FROM stat_panels ORDER BY guild_id, user_id")
+        self.assertEqual([(row["guild_id"], row["user_id"]) for row in left], sorted([(999, you), (self.guild.id, self.mod.id)]))

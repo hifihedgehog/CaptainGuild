@@ -24,7 +24,7 @@ mail megaphone menu message-circle message-square message-square-warning mic mic
 paperclip pencil pin plus power radio refresh-cw repeat rocket rss save scroll-text search send server settings shield
 shield-alert shield-check shield-ban shuffle siren smile smile-plus sparkles star sticker tag tags terminal thumbs-down thumbs-up
 ticket timer toggle-left trash-2 trending-up twitch undo-2 lock-open upload user user-check user-minus user-plus user-x users
-volume-2 volume-x wand-sparkles wrench x youtube zap""".split()
+volume-2 volume-x wand-sparkles wrench x youtube zap sun""".split()
 
 
 def build_icons(package: str) -> None:

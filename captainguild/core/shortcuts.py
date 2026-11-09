@@ -36,7 +36,10 @@ SHORTCUTS = {
     # levels and the starboard
     "levels": "level", "star": "starboard", "level leaderboard": "leaderboard",
     # members, the server and the bot
-    "i": "members info", "info": "members info", "newmembers": "members newusers", "newusers": "members newusers", "oldest": "members oldest", "oldmembers": "members oldusers", "oldusers": "members oldusers", "youngest": "members youngest",
+    "i": "members info", "info": "members info",
+    # the statistics lookups, which go by /info on the slash side, where the typed info is the member lookup
+    "info activity": "statsinfo activity", "info emoji": "statsinfo emoji", "info emojis": "statsinfo emoji", "info id": "statsinfo id", "info roles": "statsinfo roles",
+    "newmembers": "members newusers", "newusers": "members newusers", "oldest": "members oldest", "oldmembers": "members oldusers", "oldusers": "members oldusers", "youngest": "members youngest",
     "botpermissions": "misc botpermissions", "charinfo": "misc charinfo", "permissions": "misc permissions",
     "dump": "stats dump", "serverinfo": "stats serverinfo", "uptime": "stats uptime",
     # suggestions

@@ -26,6 +26,15 @@ NOT_POINTERS = {
     ("twitch_subs", "live_id"): "A Twitch stream number.",
     ("youtube_subs", "youtube_id"): "A YouTube channel.",
     ("moved_messages", "webhook_id"): "The Discord webhook that posted the copy.",
+    ("stat_activities", "activity_id"): "A number made from the game's name, the same in every database, so a restore needs no new numbers.",
+    ("stat_activity_names", "activity_id"): "A number made from the game's name, the same in every database.",
+    ("stat_activity_names", "application_id"): "Discord's ID for a game or app.",
+    ("stat_invites", "inviter_id"): "The Discord user who made the invite.",
+    ("stat_joins", "inviter_id"): "The Discord user who made the invite.",
+    ("stat_forum_posts", "forum_id"): "The Discord forum the post is in.",
+    ("stat_forum_posts", "replier_id"): "The Discord user who answered the post first.",
+    ("stat_recount_places", "place_id"): "The Discord channel or thread a recount reads, or minus a channel's ID for that channel's thread list.",
+    ("stat_auto_merges", "category_id"): "The Discord category whose channels fed a merged channel.",
 }
 
 

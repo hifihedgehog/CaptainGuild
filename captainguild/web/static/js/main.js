@@ -2,7 +2,10 @@
 import { html, render, useEffect, useRef, useState } from './lib.js';
 import { raw, api, setCsrf, setGuild, onSessionEnd, signInPath } from './api.js';
 import { Boundary, DialogHost, GuildContext, Icon, Loading, Notice, Toasts, confirmDialog, hasUnsaved, toast } from './ui.js';
-import { NAV, PAGE_INDEX, matchPages, pageOn } from './nav.js';
+import { NAV, PAGE_INDEX, firstPage, listed, matchPages, opens, pageOn } from './nav.js';
+import { applyTheme, savedTheme, setTheme } from './theme.js';
+
+applyTheme();
 
 const currentPath = () => location.pathname;
 const fullPath = () => location.pathname + location.search;
@@ -97,6 +100,12 @@ function Dropdown({ button, children, label }) {
   </div>`;
 }
 
+function ThemeItem() {
+  const [theme, setShown] = useState(savedTheme);
+  const next = theme === 'light' ? 'dark' : 'light';
+  return html`<button class="menu-item" type="button" onClick=${() => setShown(setTheme(next))}><${Icon} name=${next === 'light' ? 'sun' : 'moon'} /> ${next === 'light' ? 'Light theme' : 'Dark theme'}</button>`;
+}
+
 function TopBar({ me, guild, page, onToggleSide }) {
   return html`<header class="top">
     <a class="brand" href="/servers" data-nav="1"><img src="/static/img/logo.svg" alt="" />${me.brand.name}</a>
@@ -113,6 +122,7 @@ function TopBar({ me, guild, page, onToggleSide }) {
       <div class="menu-item" style=${{ cursor: 'default' }}><b>${me.user.name}</b></div>
       <a class="menu-item" href="/servers" data-nav="1"><${Icon} name="server" /> Servers</a>
       <a class="menu-item" href="/status"><${Icon} name="activity" /> Status</a>
+      <${ThemeItem} />
       <form method="post" action="/logout" onSubmit=${forgetDrafts}><button class="menu-item" type="submit"><${Icon} name="log-out" /> Log out</button></form>
     <//>
   </header>`;
@@ -128,7 +138,7 @@ function SideBar({ guild, page }) {
     setClosed(next);
     try { localStorage.setItem(key, JSON.stringify(next)); } catch (e) { /* a private window can refuse storage */ }
   };
-  const allowed = (item) => guild.access === 'full' || item.staff;
+  const allowed = (item) => listed(guild.access, item);
   const searching = find.trim() !== '';
   const groups = NAV.map((group) => ({ group, items: matchPages(group.items.filter(allowed), find) })).filter((entry) => entry.items.length);
   return html`<nav class="side" aria-label="Dashboard pages">
@@ -167,17 +177,25 @@ function Page({ page, guild }) {
 function GuildView({ me, guildId, page, toggleSide }) {
   const [guild, setGuildInfo] = useState(null);
   const [error, setError] = useState(null);
+  // Someone who may only view a server's statistics reads its channels and roles from the statistics pages, which leave out what Discord hides from them.
+  const listedAs = (me.guilds.find((g) => String(g.id) === String(guildId)) || {}).access;
+  const infoPath = listedAs === 'viewer' ? '/statistics/info' : '/info';
   useEffect(() => {
     // A slow answer for the server left behind must not fill the page of the one switched to.
     let live = true;
     setGuild(guildId);
     setGuildInfo(null);
     setError(null);
-    api.get('/info').then((info) => { if (live) setGuildInfo(info); }).catch((e) => { if (live) setError(e); });
+    api.get(infoPath).then((info) => { if (live) setGuildInfo(info); }).catch((e) => {
+      if (!live) return;
+      // A server whose statistics are public opens on its public page for someone it doesn't let in here.
+      if (e.status === 403 && !listedAs) raw.get(`/api/public/g/${guildId}/statistics/context`).then(() => { location.href = `/stats/${guildId}`; }).catch(() => setError(e));
+      else setError(e);
+    });
     return () => { live = false; };
   }, [guildId]);
-  const reload = () => api.get('/info').then(setGuildInfo).catch(setError);
-  const shown = page || (guild && guild.access === 'full' ? 'botsettings' : 'cases');
+  const reload = () => api.get(infoPath).then(setGuildInfo).catch(setError);
+  const shown = guild && page && !opens(guild.access, page) ? firstPage(guild.access) : page || (guild ? firstPage(guild.access) : 'cases');
   if (error) {
     return html`<${TopBar} me=${me} page=${shown} onToggleSide=${toggleSide} /><div class="main" style=${{ marginLeft: 0 }}><${Notice} kind="bad">${error.message}<//></div>`;
   }

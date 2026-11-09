@@ -902,7 +902,7 @@ class Utilities(Module):
         ctx = await self.bot.get_context(message)
         if ctx.prefix is None or not ctx.invoked_with:
             return False
-        if ctx.command is not None:
+        if ctx.command is not None and self.bot.runs_in(ctx.command, message.guild.id):
             return True
         tags = self.bot.module("tags")
         if tags is not None and await tags.find(message.guild.id, ctx.invoked_with) is not None:

@@ -54,8 +54,8 @@ def clean_public_url(value: str) -> str:
     return value.rstrip("/")
 
 
-async def can_read_message_text(token: str) -> bool:
-    """Whether Discord has given this app the Message Content intent. Asking for it without having it closes the connection.
+async def gateway_access(token: str) -> tuple[bool, bool]:
+    """Whether Discord has given this app the Message Content and Presence intents. Asking for one without having it closes the connection.
 
     The bot can't run without Server Members, so that raises here, before the site starts and an installer's health check reports success.
     """
@@ -65,9 +65,16 @@ async def can_read_message_text(token: str) -> bool:
         flags = (await client.application_info()).flags
         if not (flags.gateway_guild_members or flags.gateway_guild_members_limited):
             raise discord.PrivilegedIntentsRequired(None)
-        return flags.gateway_message_content or flags.gateway_message_content_limited
+        message_text = bool(flags.gateway_message_content or flags.gateway_message_content_limited)
+        presences = bool(getattr(flags, "gateway_presence", False) or getattr(flags, "gateway_presence_limited", False))
+        return message_text, presences
     finally:
         await client.close()
+
+
+async def can_read_message_text(token: str) -> bool:
+    """Whether Discord has given this app the Message Content intent."""
+    return (await gateway_access(token))[0]
 
 
 async def run(args: argparse.Namespace) -> None:
@@ -82,10 +89,12 @@ async def run(args: argparse.Namespace) -> None:
         await db.open()
         await message_db.open()
         token = os.environ["DISCORD_TOKEN"]
-        read_message_text = await can_read_message_text(token)
+        read_message_text, read_presences = await gateway_access(token)
         if not read_message_text:
             log.warning("Discord hasn't given this app Message Content, so anything that reads what members type waits for it. Restart the bot once it has.")
-        bot = Bot(db, message_db, public_url=args.public_url, read_message_text=read_message_text)
+        if not read_presences:
+            log.info("Discord hasn't given this app the Presence intent, so statistics count members present from Discord's estimate and track no games. Restart the bot once it has.")
+        bot = Bot(db, message_db, public_url=args.public_url, read_message_text=read_message_text, read_presences=read_presences)
         await bot.prepare(load_all())
         await bot.login(token)
         application = await bot.application_info()

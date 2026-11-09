@@ -19,7 +19,7 @@ from captainguild.web.api import Router
 from tests.fakes import BotTest, FakeChannel, FakeGuild, FakeMember, FakePermissions, new_id
 
 SESSION_KEY = b"t" * 32
-PARAM = re.compile(r"\{(\w+)(?::[^}]*)?\}")
+PARAM = re.compile(r"\{(\w+)(?::(?:[^{}]|\{[^{}]*\})*)?\}")  # a pattern may hold a count in braces, as in [0-9a-f]{16}
 EVERYONE = ("view_channel", "send_messages", "read_message_history")
 NO_ACCESS = "You don't have access to that here."
 
@@ -35,7 +35,7 @@ def routes_of(bot) -> list[tuple[str, str, str]]:
 
 def filled(path: str, value: int = 999) -> str:
     """A route's path with its parameters filled in."""
-    words = {"module": "core", "part": "avatar", "name": "nothing", "token": "nothing", "youtube_id": "nothing"}
+    words = {"module": "core", "part": "avatar", "name": "nothing", "token": "nothing", "youtube_id": "nothing", "report_id": "0000000000000000"}  # sixteen digits fit both reports routes
     return PARAM.sub(lambda match: words.get(match.group(1), str(value)), path)
 
 

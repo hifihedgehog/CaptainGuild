@@ -45,5 +45,6 @@ def load_all() -> list[type[Module]]:
     from .channelarchive import ChannelArchive
     from .answers import Answers
     from .forummessages import ForumMessages
+    from .statistics import Statistics
 
-    return [Config, MyData, Autoroles, Moderation, Automod, Logs, Reports, Voice, ReactionRoles, Roles, RoleRules, Mentions, Tags, Triggers, Feeds, Notifications, Greetings, Starboard, Embeds, Collaborative, Mover, Suggestions, Proposals, Levels, VoiceLink, Sticky, AutoPurge, Personalize, Utilities, Fun, Games, Translation, Backup, Setup, Bookmarks, RSSFeeds, EntryGiveaways, ChannelArchive, Answers, ForumMessages]
+    return [Config, MyData, Autoroles, Moderation, Automod, Logs, Reports, Voice, ReactionRoles, Roles, RoleRules, Mentions, Tags, Triggers, Feeds, Notifications, Greetings, Starboard, Embeds, Collaborative, Mover, Suggestions, Proposals, Levels, VoiceLink, Sticky, AutoPurge, Personalize, Utilities, Fun, Games, Translation, Backup, Setup, Bookmarks, RSSFeeds, EntryGiveaways, ChannelArchive, Answers, ForumMessages, Statistics]

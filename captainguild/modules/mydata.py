@@ -2,6 +2,8 @@
 
 Records staff keep for moderation stay out of reach here, since someone could otherwise wipe the evidence about them. Stored messages and log entries end when their
 retention runs out, and notes and reports when staff delete them. Cases stay on record, and staff can void one.
+
+Statistics are counts that also make up a server's totals, so they don't get deleted here: removing your name from them moves them to no one, in every server, for good.
 """
 from __future__ import annotations
 
@@ -13,6 +15,7 @@ from typing import Any
 
 from ..core.settings import Actor
 from ..core.module import Module
+from ..web.api import ApiError, json_response, read_json
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +29,9 @@ class Section:
     label: str
     tables: tuple[tuple[str, str], ...]  # each table and the column holding the person's ID
     module: str = ""  # the feature that also keeps these rows in memory
+    database: str = "main"  # "messages" for the tables in the message database
+    made_by: str = ""  # the feature whose setup makes these tables, when nothing else does. Without it loaded, they don't exist.
+    anonymize: bool = False  # deleting moves the rows to no one in every server, which is the statistics privacy choice
 
 
 SECTIONS = (
@@ -39,7 +45,29 @@ SECTIONS = (
     Section("voice_counts", "Message counts for voice access", (("voice_message_counts", "user_id"),), "voice"),
     Section("translation", "Translation language", (("translate_languages", "user_id"),)),
     Section("entrygiveaways", "Entries in giveaway channels", (("entry_giveaway_entries", "user_id"),), "entrygiveaways"),
+    Section("statistics", "Statistics counted under your name", (
+        ("stat_messages", "user_id"), ("stat_voice", "user_id"), ("stat_activities", "user_id"), ("stat_emoji", "user_id"), ("stat_emoji", "target_id"),
+        ("stat_joins", "user_id"), ("stat_joins", "inviter_id"), ("stat_invites", "inviter_id"), ("stat_people", "user_id"),
+        ("stat_forum_posts", "owner_id"), ("stat_forum_posts", "replier_id"), ("stat_recount_messages", "user_id"), ("stat_recount_emoji", "user_id"),
+        ("stat_recount_people", "user_id"), ("stat_recount_places", "owner_id"), ("stat_recount_places", "answered_by"),
+    ), "statistics", database="messages", anonymize=True),
+    Section("statpanels", "Statistics panels you made on the dashboard", (("stat_panels", "user_id"),), made_by="statistics"),
+    Section("statapikeys", "Statistics API key you made, which stops working once deleted", (("stat_api_keys", "created_by"),), made_by="statistics"),
 )
+# Columns a download leaves out of a row found through one of the person's own IDs: another person's ID and what it says about them, or a
+# secret's hash.
+LEFT_OUT = {
+    ("stat_api_keys", "created_by"): ("key_hash",),
+    ("stat_joins", "user_id"): ("inviter_id",),
+    ("stat_joins", "inviter_id"): ("user_id", "account_created", "facts", "role_met_at", "left_at"),
+    ("stat_emoji", "user_id"): ("target_id",),
+    ("stat_emoji", "target_id"): ("user_id",),
+    ("stat_forum_posts", "owner_id"): ("replier_id",),
+    ("stat_forum_posts", "replier_id"): ("owner_id",),
+    ("stat_recount_places", "owner_id"): ("answered_by",),
+    ("stat_recount_places", "answered_by"): ("owner_id",),
+}
+STATISTICS = "statistics"
 BY_KEY = {section.key: section for section in SECTIONS}
 
 # Every other table that can name a person, and why it isn't theirs to delete. A test fails when a new table is in neither place.
@@ -59,6 +87,11 @@ KEPT = {
     "rss_feeds": "the server's setup", "entry_giveaway_setup": "the server's setup", "entry_giveaway_closed": "the server's setup",
     "archive_jobs": "the server's record of channel copies", "archive_cursors": "where each channel copy got to",
     "answer_uses": "counts toward the server's daily limit on AI answers, and goes after a day", "answer_costs": "the host's record of what each AI answer cost, kept 70 days",
+    "stat_user_settings": "the person's own statistics choices, which they change on this page", "stat_members": "the server's member count over time, which names no one",
+    "stat_recounts": "who started and approved a recount of the server's statistics, for staff", "stat_merges": "who started a merge of statistics channels, for staff",
+    "stat_reports": "who set up a scheduled statistics report, for staff",
+    "stat_presets": "the server's saved views, which staff manage", "stat_merged_channels": "which channels a merge moved, whose target is a channel, not a person",
+    "stat_auto_merges": "when categories fed a merged channel, whose target is a channel, not a person", "stat_counters": "the server's setup", "stat_roles": "the server's setup",
 }
 
 
@@ -69,6 +102,21 @@ STAFF_COLUMNS = frozenset({"deleted_by"})
 def _plain(row: dict) -> dict:
     """A row a JSON file can hold. A stored picture comes out as base64."""
     return {name: base64.b64encode(value).decode() if isinstance(value, (bytes, bytearray, memoryview)) else value for name, value in row.items() if name not in STAFF_COLUMNS}
+
+
+def _own(row: dict, table: str, column: str) -> dict:
+    """A row found through the person's ID, without the columns LEFT_OUT names for that table and column."""
+    left_out = LEFT_OUT.get((table, column), ())
+    return _plain({name: value for name, value in row.items() if name not in left_out})
+
+
+async def _set_privacy(stats: Any, user_id: int, on: bool) -> None:
+    """Turns someone's statistics privacy on or off through the Statistics module, the same way the privacy command does."""
+    key, values = await stats.set_privacy(user_id, on)
+    if key == "privacy_wait":
+        raise ApiError(409, f"Your statistics privacy changed less than a day ago. It can change again after {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(values['next']))}.")
+    if key == "privacy_failed":
+        raise ApiError(500, "New statistics carry no name now, but your name couldn't come off everything counted before. Finish it from this page in a few minutes.")
 
 
 class MyData(Module):
@@ -109,11 +157,18 @@ class MyData(Module):
 
         for section in SECTIONS:
             counts: dict[int | None, int] = {}
-            for table, column in section.tables:
-                for row in await self.db.all(f"SELECT guild_id, COUNT(*) AS n FROM {table} WHERE {column} = ? GROUP BY guild_id", (user_id,)):
-                    counts[row["guild_id"]] = counts.get(row["guild_id"], 0) + row["n"]
+            if section.database == "messages":
+                counts = await self._message_counts(section, user_id)
+            elif self._missing(section):
+                continue
+            else:
+                for table, column in section.tables:
+                    for row in await self.db.all(f"SELECT guild_id, COUNT(*) AS n FROM {table} WHERE {column} = ? GROUP BY guild_id", (user_id,)):
+                        counts[row["guild_id"]] = counts.get(row["guild_id"], 0) + row["n"]
             for guild_id, count in counts.items():
-                server(guild_id)["sections"].append({"key": section.key, "label": section.label, "count": count})
+                server(guild_id)["sections"].append({"key": section.key, "label": section.label, "count": count, "everywhere": section.anonymize})
+                if section.key == STATISTICS:
+                    server(guild_id)["statistics"] = await self._statistics_summary(guild_id, user_id)
         logs = self.bot.module("logging")
         if logs is not None:
             await logs.flush()
@@ -129,8 +184,54 @@ class MyData(Module):
                 entry["log_days"] = cfg["log_retention_days"]
         return sorted(found.values(), key=lambda entry: entry["name"].lower())
 
+    def _missing(self, section: Section) -> bool:
+        """True when the feature that makes the section's tables isn't loaded, so the tables aren't there to read."""
+        return bool(section.made_by) and self.bot.module(section.made_by) is None
+
+    def _statistics_here(self) -> Any:
+        """The Statistics module, when it's loaded and its tables exist."""
+        return self.bot.module(STATISTICS)
+
+    async def _statistics_servers(self) -> list[int]:
+        """Every server that could hold someone's statistics, read one at a time because each per-person index leads with the server."""
+        stats = self._statistics_here()
+        return sorted(await stats.privacy_guilds()) if stats is not None else []
+
+    async def _message_counts(self, section: Section, user_id: int) -> dict[int | None, int]:
+        counts: dict[int | None, int] = {}
+        if section.module and self.bot.module(section.module) is None:
+            return counts
+        for guild_id in await self._statistics_servers():
+            for table, column in section.tables:
+                found = await self.message_db.scalar(f"SELECT COUNT(*) FROM {table} WHERE guild_id = ? AND {column} = ?", (guild_id, user_id))
+                if found:
+                    counts[guild_id] = counts.get(guild_id, 0) + found
+        return counts
+
+    async def _statistics_summary(self, guild_id: int, user_id: int) -> dict:
+        """What the rows add up to, in words a person reads: messages, voice and app time, emoji, and joins recorded under their name."""
+        db = self.message_db
+
+        async def total(sql: str) -> float:
+            return await db.scalar(sql, (guild_id, user_id)) or 0
+        return {
+            "messages": int(await total("SELECT SUM(count) FROM stat_messages WHERE guild_id = ? AND user_id = ?")),
+            "voice_hours": round(await total("SELECT SUM(seconds) FROM stat_voice WHERE guild_id = ? AND user_id = ?") / 3600, 1),
+            "activity_hours": round(await total("SELECT SUM(seconds) FROM stat_activities WHERE guild_id = ? AND user_id = ?") / 3600, 1),
+            "emoji": int(await total("SELECT SUM(count) FROM stat_emoji WHERE guild_id = ? AND user_id = ?")),
+            "joins": int(await total("SELECT COUNT(*) FROM stat_joins WHERE guild_id = ? AND user_id = ?")),
+        }
+
     async def delete(self, user_id: int, user_name: str, guild_id: int | None, key: str) -> None:
         section = BY_KEY[key]
+        if section.anonymize:
+            stats = self._statistics_here()
+            if stats is None:
+                return
+            await _set_privacy(stats, user_id, True)
+            return  # in every server at once, so no one server's Activity page says who chose it
+        if self._missing(section):
+            return
         owner = self.bot.module(section.module) if section.module else None
         flush = getattr(owner, "flush", None) or getattr(owner, "flush_counts", None)
         if flush is not None:
@@ -156,10 +257,23 @@ class MyData(Module):
         out: dict[str, Any] = {"user_id": user_id, "exported_at": time.time(), "tables": {}}
         room = EXPORT_MAX
         for section in SECTIONS:
+            if section.database == "messages":
+                if section.module and self.bot.module(section.module) is None:
+                    continue
+                for guild_id in await self._statistics_servers():
+                    for table, column in section.tables:
+                        rows = await self.message_db.all(f"SELECT * FROM {table} WHERE guild_id = ? AND {column} = ? LIMIT ?", (guild_id, user_id, max(room, 0)))
+                        out["tables"].setdefault(f"{table}.{column}", []).extend(_own(row, table, column) for row in rows)
+                        room -= len(rows)
+                continue
+            if self._missing(section):
+                continue
             for table, column in section.tables:
                 rows = await self.db.all(f"SELECT * FROM {table} WHERE {column} = ? LIMIT ?", (user_id, room))
-                out["tables"][table] = [_plain(row) for row in rows]
+                out["tables"][table] = [_own(row, table, column) for row in rows]
                 room -= len(rows)
+        if self._statistics_here() is not None:
+            out["tables"]["stat_user_settings"] = [_plain(row) for row in await self.db.all("SELECT * FROM stat_user_settings WHERE user_id = ?", (user_id,))]
         logs = self.bot.module("logging")
         if logs is not None:
             await logs.flush()
@@ -170,3 +284,30 @@ class MyData(Module):
             room -= len(rows)
         out["tables"]["messages"] = messages
         return out
+
+    # ---- statistics choices ----
+
+    def site_routes(self, app: Any) -> None:
+        """The person's statistics choices, which apply in every server: their name on their counts, and replies only they see."""
+        from ..web.app import _for_the_person  # app.py imports this module
+        app.router.add_get("/api/my-data/statistics", _for_the_person(self._choices))
+        app.router.add_post("/api/my-data/statistics", _for_the_person(self._choose))
+
+    async def _choices(self, request: Any, module: Any, user: Any, token: Any) -> Any:
+        stats = self._statistics_here()
+        if stats is None:
+            raise ApiError(404, "This bot doesn't keep statistics.")
+        return json_response(await stats.privacy_state(user.id))
+
+    async def _choose(self, request: Any, module: Any, user: Any, token: Any) -> Any:
+        stats = self._statistics_here()
+        if stats is None:
+            raise ApiError(404, "This bot doesn't keep statistics.")
+        form = read_json(await request.read())
+        if not isinstance(form, dict) or not set(form) <= {"private", "private_replies"} or not form or not all(isinstance(value, bool) for value in form.values()):
+            raise ApiError(400, "Send private or private_replies as on or off.")
+        if "private" in form:
+            await _set_privacy(stats, user.id, form["private"])
+        if "private_replies" in form:
+            await stats.set_private_replies(user.id, form["private_replies"])
+        return json_response(await stats.privacy_state(user.id))

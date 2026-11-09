@@ -364,7 +364,7 @@ class Triggers(Module):
                 words = content[len(prefix):].split(maxsplit=1)
                 if not words:
                     return False
-                if words[0] in self.bot.all_commands or words[0].lower() in SHORTCUTS or words[0].lower() in TAG_FIRST_SHORTCUTS:
+                if self.bot.typed_command(words[0], message.guild.id) is not None or words[0].lower() in SHORTCUTS or words[0].lower() in TAG_FIRST_SHORTCUTS:
                     return True
                 tags = self.bot.module("tags")
                 return tags is not None and await tags.find(message.guild.id, words[0]) is not None

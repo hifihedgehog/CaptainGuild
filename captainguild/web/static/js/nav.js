@@ -1,5 +1,6 @@
 // The sidebar: Settings first, then the extras that most servers set up next, then the rest.
-// `staff: true` pages also open for people with staff access, and the rest need Manage Server.
+// `staff: true` pages also open for people with staff access, and the rest need Manage Server. `viewer: true` pages also open for someone a
+// server lets view its statistics without staff access, and they see only those.
 export const NAV = [
   { title: 'Settings', items: [
     { key: 'setup', name: 'Quick setup', icon: 'wand-sparkles' },
@@ -40,6 +41,14 @@ export const NAV = [
     { key: 'youtube', name: 'YouTube', icon: 'youtube' },
     { key: 'rss', name: 'RSS feeds', icon: 'rss' },
   ] },
+  { title: 'Statistics', items: [
+    { key: 'statistics', name: 'Statistics', icon: 'chart-column', staff: true, viewer: true },
+    { key: 'statssettings', name: 'Statistics settings', icon: 'settings', linked: true },
+    { key: 'counters', name: 'Counter channels', icon: 'hash', linked: true },
+    { key: 'statroles', name: 'Stat roles', icon: 'crown', linked: true },
+    { key: 'statsdata', name: 'Statistics data', icon: 'database' },
+    { key: 'statsinsights', name: 'Statistics insights', icon: 'gauge', staff: true },
+  ] },
   { title: 'Utility', items: [
     { key: 'greetings', name: 'Greetings', icon: 'door-open' },
     { key: 'starboard', name: 'Starboard', icon: 'star' },
@@ -63,8 +72,23 @@ export const PAGE_INDEX = Object.fromEntries(NAV.flatMap((group) => group.items.
 export function pageOn(access, page) {
   const entry = PAGE_INDEX[page];
   if (access === 'full') return entry ? page : 'botsettings';
+  if (access === 'viewer') return entry && entry.viewer ? page : 'statistics';
   return entry && entry.staff ? page : 'cases';
 }
+
+// The page a server opens on when the address names none.
+export const firstPage = (access) => (access === 'full' ? 'botsettings' : access === 'viewer' ? 'statistics' : 'cases');
+
+// Whether a page opens for someone at this level. Someone who only views statistics gets the pages listed for them, and a `linked` page, which
+// the statistics page links to for whoever its own checks let change a part of it.
+export function opens(access, page) {
+  if (access !== 'viewer') return true;
+  const entry = PAGE_INDEX[page];
+  return !!entry && (!!entry.viewer || !!entry.linked);
+}
+
+// Whether the sidebar lists a page for someone at this level.
+export const listed = (access, item) => access === 'full' || (access === 'viewer' ? !!item.viewer : !!item.staff);
 
 // The pages a filter box leaves in the sidebar: those whose name holds what was typed.
 export function matchPages(items, text) {

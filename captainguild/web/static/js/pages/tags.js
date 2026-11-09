@@ -229,6 +229,7 @@ export default function TagsPage() {
   const [total, setTotal] = useState(0);
   const [prefix, setPrefix] = useState('!');
   const [canTrust, setCanTrust] = useState(false);
+  const [shadowed, setShadowed] = useState([]);
   const [version, setVersion] = useState(0);
   const [editing, setEditing] = useState(null);
   const [importing, setImporting] = useState(Boolean(startShare));
@@ -237,6 +238,7 @@ export default function TagsPage() {
     setTotal(data.total);
     setPrefix(data.prefixes[0] || '/tag get ');
     setCanTrust(data.can_trust);
+    setShadowed(data.shadowed || []);
   };
   const edit = async (id) => {
     try {
@@ -263,6 +265,7 @@ export default function TagsPage() {
         </div>
       </div>
       <${TagTable} key=${guild.id} version=${version} onEdit=${edit} onLoaded=${onLoaded} />
+      ${shadowed.length > 0 && html`<p class="muted small">These tags share a name with a command, so typing that name runs the command instead: ${shadowed.join(', ')}. /tag get still runs them, or rename them.</p>`}
     <//>
     <${WaitingOnTrust} key=${guild.id} version=${version} onChanged=${load} />
     <${Rules} />

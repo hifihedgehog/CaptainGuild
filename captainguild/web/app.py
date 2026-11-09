@@ -10,6 +10,7 @@ from __future__ import annotations
 import hmac
 import hashlib
 import html
+import ipaddress
 import logging
 import re
 import secrets
@@ -32,7 +33,7 @@ from ..core.signin import LINK_SECONDS
 from ..core.validate import ValidationError, whole_number
 from ..crypto import new_token, token_hash
 from ..modules.mydata import BY_KEY
-from .api import ACCESS_ORDER, ApiError, Req, Router, User, error_response, json_response, read_json
+from .api import ACCESS_ORDER, ApiError, PublicReq, Req, Router, User, error_response, json_response, read_json
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ FLOW_SECONDS = 600
 DISCORD_API = "https://discord.com/api/v10"
 WRITES_PER_MINUTE = 240
 READS_PER_MINUTE = 600
+PUBLIC_READS_PER_MINUTE = 1200  # per address, for pages a server made public. Their answers are kept a minute, so most cost nothing.
 MEMBERS_PER_CALL = 100
 MAX_REQUEST_BYTES = 12 * 1024 * 1024
 
@@ -62,6 +64,7 @@ SECURITY_HEADERS = {
     "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=()",
 }
 PUBLIC_PAGES = {"/": "index.html", "/privacy": "privacy.html", "/terms": "terms.html", "/docs": "docs.html", "/status": "status.html", "/my-data": "mydata.html"}
+PUBLIC_STATS_PAGE = "stats.html"
 DASHBOARD_PAGE = "dashboard.html"
 CORE_SETTINGS = "core"
 DISCORD_ID_TEXT = re.compile(r"[0-9]{17,20}")
@@ -76,8 +79,8 @@ class Sessions:
         token = new_token()
         now = time.time()
         await self.db.run(
-            "INSERT INTO web_sessions (token_hash, user_id, user_name, avatar, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (token_hash(token), user.id, user.name, user.avatar, now, now + SESSION_SECONDS),
+            "INSERT INTO web_sessions (token_hash, user_id, user_name, avatar, created_at, expires_at, mfa) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (token_hash(token), user.id, user.name, user.avatar, now, now + SESSION_SECONDS, int(user.mfa)),
         )
         await self.db.run("DELETE FROM web_sessions WHERE expires_at < ?", (now,))
         return token
@@ -86,7 +89,7 @@ class Sessions:
         if not token:
             return None
         row = await self.db.one("SELECT * FROM web_sessions WHERE token_hash = ? AND expires_at > ?", (token_hash(token), time.time()))
-        return User(row["user_id"], row["user_name"], row["avatar"]) if row else None
+        return User(row["user_id"], row["user_name"], row["avatar"], bool(row["mfa"])) if row else None
 
     async def end(self, token: str | None) -> None:
         if token:
@@ -140,6 +143,7 @@ class Site:
     demo_user: User | None
     limiter: RateLimiter
     read_limiter: RateLimiter
+    public_limiter: RateLimiter
 
 
 SITE = web.AppKey("site", Site)
@@ -152,7 +156,7 @@ def build_app(bot: Any, *, session_key: bytes, client_id: str = "", client_secre
         bot=bot, session_key=session_key, sessions=Sessions(bot.db), client_id=client_id, client_secret=client_secret,
         public_url=public_url.rstrip("/"), session_cookie=SESSION_COOKIE if secure_cookies else DEV_SESSION_COOKIE,
         flow_cookie=FLOW_COOKIE if secure_cookies else DEV_FLOW_COOKIE, secure_cookies=secure_cookies, demo_user=demo_user, limiter=RateLimiter(WRITES_PER_MINUTE),
-        read_limiter=RateLimiter(READS_PER_MINUTE),
+        read_limiter=RateLimiter(READS_PER_MINUTE), public_limiter=RateLimiter(PUBLIC_READS_PER_MINUTE),
     )
 
     app.router.add_get("/login", _login)
@@ -171,6 +175,7 @@ def build_app(bot: Any, *, session_key: bytes, client_id: str = "", client_secre
     app.router.add_get("/servers", _page(DASHBOARD_PAGE))
     app.router.add_get(r"/dashboard/{guild_id:\d+}", _page(DASHBOARD_PAGE))
     app.router.add_get(r"/dashboard/{guild_id:\d+}/{tail:.*}", _page(DASHBOARD_PAGE))
+    app.router.add_get(r"/stats/{guild_id:\d+}", _page(PUBLIC_STATS_PAGE))
     app.router.add_static("/static/", STATIC, append_version=False)
 
     router = Router()
@@ -179,6 +184,19 @@ def build_app(bot: Any, *, session_key: bytes, client_id: str = "", client_secre
         module.api(router)
     for method, path, handler, level in router.routes:
         app.router.add_route(method, f"/api/g/{{guild_id:\\d+}}{path}", _wrap(handler, level))
+    # Pages a server can make public, such as its statistics. These never read a session, and each handler refuses unless the server chose it.
+    public = Router()
+    for module in getattr(bot, "modules", []):
+        mount = getattr(module, "public_api", None)
+        if mount is not None:
+            mount(public)
+    for method, path, handler, _ in public.routes:
+        if method == "GET":
+            app.router.add_get(f"/api/public/g/{{guild_id:\\d+}}{path}", _public(handler))
+    for module in getattr(bot, "modules", []):
+        site_routes = getattr(module, "site_routes", None)
+        if site_routes is not None:  # paths of its own, such as the statistics API, which takes a server's key instead of a session
+            site_routes(app)
     return app
 
 
@@ -229,11 +247,71 @@ def _wrap(handler: Any, access: str) -> Any:
             guild_id = whole_number(request.match_info["guild_id"])
             bot = request.app[SITE].bot
             level = bot.ops.access_for(guild_id, user.id) if guild_id is not None else None
+            if access == "viewer" and guild_id is not None:
+                level = viewer_level(bot, guild_id, user.id, level)
             if level is None:
                 raise ApiError(403, "You don't have access to that here.")
             if ACCESS_ORDER[level] < needed:
                 raise ApiError(403, "That takes Manage Server. Ask someone who has it.")
             result = await handler(Req(request, bot, user, guild_id, level))
+            return result if isinstance(result, web.StreamResponse) else json_response(result if result is not None else {"ok": True})
+        except web.HTTPException:
+            raise
+        except Exception as error:
+            answer = error_response(error)
+            if answer is not None:
+                return answer
+            log.exception("%s %s failed", request.method, request.path)
+            return json_response({"error": "Something went wrong on the server. It's been logged.", "fields": {}}, 500)
+    return wrapped
+
+
+def viewer_level(bot: Any, guild_id: int, user_id: int, level: str | None) -> str | None:
+    """Someone's level on the routes a server can open wider, the statistics pages: what the module that opens them says, given their
+    dashboard level. With no such module, their dashboard level."""
+    for module in getattr(bot, "modules", []):
+        decide = getattr(module, "viewer_level", None)
+        if decide is not None:
+            return decide(guild_id, user_id, level)
+    return level
+
+
+def visitor(request: web.Request) -> str:
+    """Who sent a request, for a limit per visitor. deploy/install.sh puts LiteSpeed on the same host in front of the site, so every
+    visitor arrives from a loopback address, and their own address is the last one in X-Forwarded-For, the one LiteSpeed added after
+    whatever the visitor wrote there. From any other address the header is the sender's own say, so it's ignored. An IPv6 visitor
+    counts as their /64, which one home connection holds whole."""
+    peer = request.remote or ""
+    address = _address(peer)
+    if address is not None and address.is_loopback:
+        added = [part.strip() for header in request.headers.getall("X-Forwarded-For", []) for part in header.split(",") if part.strip()]
+        forwarded = _address(added[-1]) if added else None
+        if forwarded is not None:
+            address = forwarded
+    if address is None:
+        return peer or "unknown"
+    if address.version == 6 and address.ipv4_mapped is None:
+        return str(ipaddress.ip_network(f"{address}/64", strict=False))
+    return str(address.ipv4_mapped or address) if address.version == 6 else str(address)
+
+
+def _address(text: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(text.split("%")[0])
+    except ValueError:
+        return None
+
+
+def _public(handler: Any) -> Any:
+    """A read of a page a server made public. No session is read or needed, and the limit is per visitor."""
+    async def wrapped(request: web.Request) -> web.StreamResponse:
+        try:
+            if not request.app[SITE].public_limiter.allow(visitor(request)):
+                raise ApiError(429, "That's a lot of requests in a minute. Wait a moment and try again.")
+            guild_id = whole_number(request.match_info["guild_id"])
+            if guild_id is None:
+                raise ApiError(404, "Not found.")
+            result = await handler(PublicReq(request, request.app[SITE].bot, guild_id))
             return result if isinstance(result, web.StreamResponse) else json_response(result if result is not None else {"ok": True})
         except web.HTTPException:
             raise
@@ -275,6 +353,8 @@ async def _me(request: web.Request) -> web.Response:
     guilds = []
     for guild_id in bot.ops.guild_ids():
         level = bot.ops.access_for(guild_id, user.id)
+        if level is None:
+            level = viewer_level(bot, guild_id, user.id, None)  # someone who may only view the server's statistics
         if level is None:
             continue
         info = bot.ops.guild_summary(guild_id)
@@ -476,7 +556,7 @@ async def _read_discord_user(app: Site, code: str) -> User | None:
     if not body or "id" not in body:
         return None
     avatar = f"https://cdn.discordapp.com/avatars/{body['id']}/{body['avatar']}.png?size=128" if body.get("avatar") else None
-    return User(int(body["id"]), body.get("global_name") or body.get("username") or body["id"], avatar)
+    return User(int(body["id"]), body.get("global_name") or body.get("username") or body["id"], avatar, bool(body.get("mfa_enabled")))
 
 
 async def _logout(request: web.Request) -> web.Response:

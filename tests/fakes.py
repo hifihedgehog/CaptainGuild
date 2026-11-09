@@ -451,6 +451,11 @@ class FakeGuild:
         channel.overwrites = overwrites or {}
         return channel
 
+    async def create_voice_channel(self, name: str, *, overwrites: Any = None, reason: str | None = None, **kwargs: Any) -> FakeChannel:
+        channel = FakeChannel(self, name, discord.ChannelType.voice, category=kwargs.get("category"))
+        channel.overwrites = overwrites or {}
+        return channel
+
 
 class FakeContext:
     """What a command callback needs from its context. `sent` collects everything the command replied."""

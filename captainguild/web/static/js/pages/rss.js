@@ -42,7 +42,7 @@ function FeedList({ data, onChanged }) {
     const sure = await confirmDialog({ title: 'Stop this feed?', body: `${feed.url} stops posting in #${channelName(guild, feed.channel_id)}. Its earlier posts stay.`, confirm: 'Remove', danger: true });
     if (!sure) return;
     try {
-      await api.delete(`/rss/${feed.id}`);
+      await api.del(`/rss/${feed.id}`);
       toast('Removed.');
       onChanged();
     } catch (error) {
