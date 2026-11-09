@@ -168,6 +168,15 @@ class Keys(ApiTest):
         self.assertTrue(1 <= int(headers["retry-after"]) <= 60)
         self.assertEqual(headers["x-ratelimit-remaining"], "0")
 
+    def test_the_reset_stays_within_the_window_at_any_clock_reading(self):
+        from captainguild.core.stats import devapi
+        for now in (452.007, 452.008, 1023.5, 1_794_199_866.2417974):  # the first two round (now + 60) - now up past 60
+            limiter = devapi.Limiter(per_window=3, seconds=60)
+            for _ in range(4):
+                _, headers = limiter.take(1, now)
+                self.assertEqual(headers["x-ratelimit-reset"], "60", now)
+            self.assertEqual(headers["retry-after"], "60", now)
+
     async def test_the_key_never_goes_into_a_backup(self):
         body = bytearray()
         async for block in self.cog(Backup).export_stream(self.guild.id, include_messages=True):

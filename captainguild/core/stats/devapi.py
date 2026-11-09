@@ -947,7 +947,8 @@ class Limiter:
         self.windows[owner] = (start, used)
         if len(self.windows) > 10_000:
             self.windows.pop(next(iter(self.windows)))
-        reset = max(1, math.ceil(start + self.seconds - now))
+        # Held to the window: near a power of two, (start + seconds) - now can round to a hair over the window and read one second too many.
+        reset = max(1, min(self.seconds, math.ceil(start + self.seconds - now)))
         headers = {"x-ratelimit-limit": str(self.per_window), "x-ratelimit-remaining": str(max(0, self.per_window - used)), "x-ratelimit-reset": str(reset)}
         if not allowed:
             headers["retry-after"] = str(reset)

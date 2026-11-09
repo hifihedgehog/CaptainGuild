@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -76,15 +77,17 @@ class PageScripts(unittest.IsolatedAsyncioTestCase):
         port = site._server.sockets[0].getsockname()[1]
         profile = tempfile.mkdtemp(prefix="cg-browser-")
         try:
-            process = await asyncio.create_subprocess_exec(_browser(), "--headless=new", "--disable-gpu", "--no-first-run", f"--user-data-dir={profile}",
+            # Ubuntu's AppArmor rules keep Chrome's sandbox from starting on CI runners, and the page is this test's own harness.
+            sandbox = ["--no-sandbox"] if sys.platform.startswith("linux") else []
+            process = await asyncio.create_subprocess_exec(_browser(), "--headless=new", "--disable-gpu", "--no-first-run", *sandbox, f"--user-data-dir={profile}",
                                                            "--virtual-time-budget=10000", "--dump-dom", f"http://127.0.0.1:{port}/harness",
-                                                           stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-            dom, _ = await asyncio.wait_for(process.communicate(), 90)
+                                                           stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            dom, errors = await asyncio.wait_for(process.communicate(), 90)
         finally:
             await runner.cleanup()
             shutil.rmtree(profile, ignore_errors=True)
         found = re.search(r'<pre id="out">(.*?)</pre>', dom.decode("utf-8", "replace"), re.S)
-        self.assertIsNotNone(found, dom[-500:])
+        self.assertIsNotNone(found, (dom[-500:], errors.decode("utf-8", "replace")[-1500:]))
         import html
         result = json.loads(html.unescape(found.group(1)))
         self.assertNotIn("error", result, result.get("error"))
