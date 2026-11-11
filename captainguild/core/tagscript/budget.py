@@ -17,7 +17,7 @@ import weakref
 from typing import Any, Callable, TypeVar
 
 from .engine import Scope
-from .payload import fit_payload, render_payload
+from .payload import as_written, fit_payload, render_payload
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +28,9 @@ SERVER_SECONDS = 5.0     # for each pool in each server
 MEMBER_SECONDS = 1.0     # for each person in each server, across every pool
 WINDOW = 60.0
 RUN_SLOTS = 2            # threads working on templates at once, across every server
+# How long a thread holds the interpreter's lock while another waits for it, set for the whole program at start. The event loop has to win the
+# lock back after each of its system calls while a template runs in a thread, and Python's own 5 ms let a heavy run hold the loop past 100 ms.
+SWITCH_SECONDS = 0.001
 MAX_WAITING = 20         # runs of a tag or trigger that can wait for a slot. The next one is refused, since whoever typed it is better off told than kept waiting.
 BENCH_SECONDS = 600.0
 BENCH_PEOPLE = 3         # different people who must run a template out of time before it stops for everyone
@@ -155,19 +158,25 @@ def _holds_block(value: Any) -> bool:
     return False
 
 
-async def render_message(payload: dict, scope: Scope, *, guild_id: int | None = None) -> dict:
+async def render_message(payload: dict, scope: Scope, *, guild_id: int | None = None, marks: dict | None = None) -> dict:
     """Fill in a greeting, level-up, sticky, feed post or other message a server wrote, away from the event loop. Never raises.
 
     Past the server's budget the template goes out as written, which is what a template past its own limits does. Give `guild_id` when the scope has no guild.
+    `marks` is render_payload's: marks["content"] is the text as it came out, with what came from outside the template still marked, and
+    marks["kept"] is true when it went out as written although it holds a block.
     """
+    if marks is not None:
+        as_written(payload, marks)
     if not _holds_block(payload):
         return fit_payload(payload)
     place = guild_id if guild_id is not None else getattr(scope.guild, "id", 0)
     try:
-        return await budgeted_render(lambda: render_payload(payload, scope), place, pool=MESSAGES)
+        # The call is the same as ever when nobody asks for the marks.
+        work = (lambda: render_payload(payload, scope)) if marks is None else (lambda: render_payload(payload, scope, marks=marks))
+        return await budgeted_render(work, place, pool=MESSAGES)
     except OverBudget:
         log.info("Server %s has spent its template time for this minute, so a message went out as written", place)
-        return fit_payload(payload)
+        return fit_payload(payload)  # nothing ran, so the marks are still the text as written
 
 
 def _digest(value: str) -> bytes:

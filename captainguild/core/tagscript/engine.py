@@ -15,8 +15,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import objects
-from .blocks import BLOCKS
-from .text import MAX_BLOCKS, MAX_SECONDS, MAX_SOURCE, MAX_VALUE, MAX_WORK, OUT_OF_TIME, LimitReached, clean_source, plain, shield, words_of
+from .blocks import BLOCKS, GIVES_WAY
+from .text import MAX_BLOCKS, MAX_SECONDS, MAX_SOURCE, MAX_VALUE, MAX_WORK, OUT_OF_TIME, LimitReached, clean_source, plain, shield, strip_marked, words_of
 
 _BRACE = re.compile(r"[{}]")
 _SHAPE = re.compile(r"[:()]")
@@ -24,7 +24,7 @@ _SHAPE = re.compile(r"[:()]")
 
 @dataclass
 class Scope:
-    """What a template can see. Any of these can be None. `extra` adds variables such as {reason}."""
+    """What a template can see. Any of these can be None. `extra` adds variables such as {reason}: text, or a thing from objects.py with properties of its own."""
     guild: Any = None
     member: Any = None
     channel: Any = None
@@ -178,7 +178,8 @@ class Interpreter:
         if scope.role is not None:
             self.variables["role"] = objects.role(scope.role, scope.role_added)
         for name, value in (scope.extra or {}).items():
-            self.variables[str(name)] = shield("" if value is None else str(value))
+            # A feature can hand over a thing with properties, such as the invite a greeting reads. Anything else is text from outside.
+            self.variables[str(name)] = value if isinstance(value, objects.Thing) else shield("" if value is None else str(value))
 
     def _spend(self, characters: int) -> None:
         self._work += characters
@@ -190,10 +191,13 @@ class Interpreter:
     def _run_block(self, text: str) -> str | None:
         head, parameter, payload = split_block(text)
         name = plain(head)
-        if name == head:  # a name built from a member's text only ever reads a variable, or {{args}} would let them run any block
-            block = BLOCKS.get(name.lower())
+        lowered = name.lower()  # once, since a block's name can be all of a long text
+        # A name built from a member's text only ever reads a variable, or {{args}} would let them run any block. A variable named like a
+        # block newer than it reads as that variable.
+        if name == head and not (lowered in GIVES_WAY and name in self.variables):
+            block = BLOCKS.get(lowered)
             if block is not None:
-                value = block(self, name.lower(), parameter, payload)
+                value = block(self, lowered, parameter, payload)
                 if value is not None:
                     return value
         return self._read_variable(name, parameter, payload)
@@ -214,6 +218,13 @@ class Interpreter:
 
     def render(self, source: str) -> str:
         """Run one piece of text. Raises LimitReached when it asks for too much, and any variables it set stay set."""
+        return plain(self._result(source)).strip("\n ")
+
+    def render_marked(self, source: str) -> str:
+        """`render`, with every character that came from outside the template still marked (see text.py), so a caller can tell what the template wrote."""
+        return strip_marked(self._result(source))
+
+    def _result(self, source: str) -> str:
         if len(source) > MAX_SOURCE:
             raise LimitReached("the template is too long")
         source = clean_source(source)
@@ -243,7 +254,18 @@ class Interpreter:
             result = _text_of(source, root)
         if len(result) > MAX_VALUE:
             raise LimitReached("the output is too long")
-        return plain(result).strip("\n ")
+        return result
+
+    def render_or_keep_marked(self, text: str) -> tuple[str, str]:
+        """`render_or_keep`, and beside it the same text with every character that came from outside the template still marked. The two are the same length."""
+        if self.exhausted or "{" not in text:
+            return text, text
+        try:
+            marked = self.render_marked(text)
+        except LimitReached:
+            self.exhausted = True
+            return text, text
+        return plain(marked), marked
 
     def render_or_keep(self, text: str) -> str:
         """Run one piece of text, leaving it as written when it asks for too much. The budget is per run, so what's left of a message stays as written too."""

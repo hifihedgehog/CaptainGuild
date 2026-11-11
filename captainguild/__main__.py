@@ -30,6 +30,7 @@ from . import __version__
 from .bot import Bot
 from .core.answers import screening, servers
 from .core.invite import ADD_PERMISSIONS, invite_url  # noqa: F401  (ADD_PERMISSIONS is read through this module)
+from .core.tagscript import budget
 from .crypto import Keyring, decode_master_key
 from .db import Database, DatabaseKeyError
 from .modules import load_all
@@ -166,6 +167,7 @@ def load_term_matching(module_path: str | None, folder: str | None) -> None:
 
 def main() -> None:
     os.umask(0o077)  # what this program writes stays readable by its own user alone, whatever the shell's default is
+    sys.setswitchinterval(budget.SWITCH_SECONDS)  # so the event loop isn't kept waiting by template work in a thread (budget.py)
     parser = argparse.ArgumentParser(prog="captainguild")
     parser.add_argument("--public-url", default="", help="This site's address, with https and no trailing slash")
     parser.add_argument("--host", default="127.0.0.1", help="Address to listen on. Keep this local and put a proxy in front.")

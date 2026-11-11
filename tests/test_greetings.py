@@ -30,6 +30,7 @@ class GreetingsCase(BotTest):
         self.bot._connection.user = self.me
         self.cog_ = self.cog(Greetings)
         self.cog_.BAN_WAIT = 0
+        self.cog_.invites.settle = 0
 
     async def configure(self, **form):
         await self.bot.settings.save(self.guild.id, "greetings", form)

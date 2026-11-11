@@ -118,36 +118,54 @@ def _word(moment: datetime.datetime, code: str) -> str | None:
     return None
 
 
-def format_time(moment: datetime.datetime, pattern: str) -> str:
-    """Like Linux's strftime in the C locale, with its flags: %-d drops padding, %_d pads with spaces, %^a is upper case."""
+def _field_text(moment: datetime.datetime, match: re.Match) -> str:
+    """What one code of a format gives, read from its match of _FIELD."""
+    flags, width, code = match.group(1), match.group(2), match.group(3)
+    shorthand = _SHORTHAND.get(code)
+    number = None if shorthand else _number(moment, code)
+    if number is not None:
+        value, default_width, padding = number
+        if "-" in flags:
+            return str(value)
+        if "_" in flags:
+            padding = " "
+        elif "0" in flags:
+            padding = "0"
+        return str(value).rjust(int(width) if width else default_width, padding)
+    text = format_time(moment, shorthand) if shorthand else _word(moment, code)
+    if text is None:
+        return match.group(0)
+    if "#" in flags:
+        text = text.lower() if code in ("p", "Z") else text.upper()
+    if "^" in flags:
+        text = text.upper()
+    if width:
+        text = text.rjust(int(width), "0" if "0" in flags else " ")
+    return text
 
-    def replace(match: re.Match) -> str:
-        flags, width, code = match.group(1), match.group(2), match.group(3)
-        shorthand = _SHORTHAND.get(code)
-        number = None if shorthand else _number(moment, code)
-        if number is not None:
-            value, default_width, padding = number
-            if "-" in flags:
-                text = str(value)
-            else:
-                if "_" in flags:
-                    padding = " "
-                elif "0" in flags:
-                    padding = "0"
-                text = str(value).rjust(int(width) if width else default_width, padding)
-            return text
-        text = format_time(moment, shorthand) if shorthand else _word(moment, code)
+
+def format_time(moment: datetime.datetime, pattern: str, codes: dict | None = None, literal: str | None = None) -> str:
+    """Like Linux's strftime in the C locale, with its flags: %-d drops padding, %_d pads with spaces, %^a is upper case. A code that comes
+    again gives the same text, made once. With `codes`, a str.translate table, what each code gives goes through it. With `literal`, a text as
+    long as the pattern, the pattern's own text is taken from it, character for character. Either way it's one pass over the pattern."""
+    made: dict[str, str] = {}
+
+    def field(match: re.Match) -> str:
+        whole = match.group(0)
+        text = made.get(whole)
         if text is None:
-            return match.group(0)
-        if "#" in flags:
-            text = text.lower() if code in ("p", "Z") else text.upper()
-        if "^" in flags:
-            text = text.upper()
-        if width:
-            text = text.rjust(int(width), "0" if "0" in flags else " ")
+            text = _field_text(moment, match)
+            text = made[whole] = text if codes is None else text.translate(codes)
         return text
 
-    return _FIELD.sub(replace, pattern)
+    if literal is None:
+        return _FIELD.sub(field, pattern)
+    pieces, at = [], 0
+    for match in _FIELD.finditer(pattern):
+        pieces += (literal[at:match.start()], field(match))
+        at = match.end()
+    pieces.append(literal[at:])
+    return "".join(pieces)
 
 
 def parse_when(text: str) -> datetime.datetime | None:
@@ -178,13 +196,22 @@ def stamp(moment: datetime.datetime | None) -> str:
     return moment.strftime(DATETIME_FORMAT)
 
 
+def relative(moment: datetime.datetime | None) -> str:
+    """A Discord timestamp that reads as "3 years ago" or "in 5 days" and keeps itself current. Nothing when there's no date."""
+    if moment is None:
+        return ""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return f"<t:{int(moment.timestamp())}:R>"
+
+
 def _plus_months(moment: datetime.datetime, months: int) -> datetime.datetime:
     year, month = divmod(moment.year * 12 + moment.month - 1 + months, 12)
     return moment.replace(year=year, month=month + 1, day=min(moment.day, calendar.monthrange(year, month + 1)[1]))
 
 
-def describe_gap(first: datetime.datetime, second: datetime.datetime) -> str:
-    """The time between two moments in calendar terms, largest three units: "1 month, 5 days and 21 hours"."""
+def describe_gap(first: datetime.datetime, second: datetime.datetime, units: int = 3) -> str:
+    """The time between two moments in calendar terms, largest three units: "1 month, 5 days and 21 hours". `units` is how many it names, so 1 gives "1 month"."""
     early, late = sorted((first.replace(microsecond=0), second.replace(microsecond=0)))
     months = (late.year - early.year) * 12 + late.month - early.month
     if _plus_months(early, months) > late:
@@ -195,7 +222,7 @@ def describe_gap(first: datetime.datetime, second: datetime.datetime) -> str:
     hours, remainder = divmod(rest.seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     parts = [(years, "year"), (months, "month"), (weeks, "week"), (days, "day"), (hours, "hour"), (minutes, "minute"), (seconds, "second")]
-    words = [f"{amount} {name}{'' if amount == 1 else 's'}" for amount, name in parts if amount][:3]
+    words = [f"{amount} {name}{'' if amount == 1 else 's'}" for amount, name in parts if amount][:max(units, 1)]
     if not words:
         return "now"
     if len(words) == 1:

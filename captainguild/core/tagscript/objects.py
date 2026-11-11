@@ -1,4 +1,4 @@
-"""The Discord things a template can read: {user}, {target}, {server}, {channel} and {role}.
+"""The Discord things a template can read: {user}, {target}, {server}, {channel} and {role}, and in a greeting {invite}.
 
 A thing's plain name gives its usual text and a parameter gives a property, as in {user(id)}. Reading a property never raises: a deleted role or
 a member who has left gives empty text, because the template's author can't guard against that. A property nobody has heard of stays as written.
@@ -8,8 +8,10 @@ from __future__ import annotations
 import random
 from typing import Any, Callable
 
-from .clock import stamp
+from .clock import relative, stamp
 from .text import plain, shield, words_of
+
+UNKNOWN = "Unknown"  # what an invite nobody could tell reads as
 
 # The permissions {role(has_elevated_perms)} looks for.
 ELEVATED = frozenset({
@@ -45,6 +47,27 @@ def _position(person: Any) -> str:
     return str(top.position) if top is not None else "0"
 
 
+def _unlinked(name: str) -> str:
+    """`[text](link)` in a name would show as a link in the bot's own post, with the server's trust behind it."""
+    return name.replace("](", "]\\(")
+
+
+def profile_name(user: Any) -> str:
+    """The name on someone's own profile: their global name, or their username when they set none, with the old four-digit tag for an account that still has one.
+    A server nickname never changes it, so a goodbye can name someone the way their account does."""
+    chosen = getattr(user, "global_name", None)
+    if chosen:
+        return str(chosen)
+    tag = str(getattr(user, "discriminator", None) or "0")
+    return f"{user.name}#{tag}" if tag != "0" else str(user.name)
+
+
+def _profile_avatar(person: Any) -> str:
+    """The avatar on their own profile, whichever one they wear in this server."""
+    own = getattr(person, "avatar", None) or getattr(person, "default_avatar", None) or person.display_avatar
+    return str(own.url)
+
+
 _PERSON: dict[str, Callable[[Any], str]] = {
     "avatar": _avatar,
     "icon": _avatar,
@@ -58,6 +81,15 @@ _PERSON: dict[str, Callable[[Any], str]] = {
     "proper": str,
     "roleids": _role_ids,
     "position": _position,
+    "username": lambda p: p.name,
+    "global_name": lambda p: _unlinked(getattr(p, "global_name", None) or ""),
+    "profile_name": lambda p: _unlinked(profile_name(p)),
+    "profile_avatar": _profile_avatar,
+    "discriminator": lambda p: str(getattr(p, "discriminator", None) or "0"),
+    "bot": lambda p: _boolean(bool(getattr(p, "bot", False))),
+    "pending": lambda p: _boolean(bool(getattr(p, "pending", False))),
+    "created_ago": lambda p: relative(p.created_at),
+    "joined_ago": lambda p: relative(getattr(p, "joined_at", None)),
 }
 
 _CHANNEL: dict[str, Callable[[Any], str]] = {
@@ -98,7 +130,7 @@ class Thing:
 
 def plain_name(member: Any) -> str:
     """A person's name with one thing changed: `[text](link)` in a display name would show as a link in the bot's own post, with the server's trust behind it."""
-    return member.display_name.replace("](", "]\\(")
+    return _unlinked(member.display_name)
 
 
 def person(member: Any) -> Thing:
@@ -158,8 +190,13 @@ def server(guild: Any) -> Thing:
     def member_count(g: Any) -> str:
         return str(g.member_count if g.member_count is not None else len(everyone()))
 
+    def picture(name: str) -> Callable[[Any], str]:
+        return lambda g: str(getattr(g, name).url) if getattr(g, name, None) else ""
+
     return Thing(guild, lambda g: g.name, {
         "icon": lambda g: str(g.icon.url) if g.icon else "",
+        "splash": picture("splash"),
+        "banner": picture("banner"),
         "id": lambda g: str(g.id),
         "name": lambda g: g.name,
         "owner": owner,
@@ -172,4 +209,46 @@ def server(guild: Any) -> Thing:
         "roles": lambda g: str(len(g.roles)),
         "channels": lambda g: str(len(g.channels)),
         "created_at": lambda g: stamp(g.created_at),
+    })
+
+
+def invite(details: Any) -> Thing:
+    """The invite a join came through, for a greeting. `details` holds code, uses, max_uses, max_age, temporary, channel_id, created_at, expires_at,
+    inviter_id and the inviter's names (core/invitewatch.py's Invite). It is None when nobody could tell which invite it was: the code and the
+    inviter then read Unknown, the numbers 0, and the dates nothing."""
+    known = details is not None
+
+    def number(name: str) -> Callable[[Any], str]:
+        return lambda d: str(int(getattr(d, name, 0) or 0)) if known else "0"
+
+    def date(name: str, write: Callable[[Any], str]) -> Callable[[Any], str]:
+        return lambda d: write(getattr(d, name, None)) if known else ""
+
+    def code(d: Any) -> str:
+        return str(d.code) if known else UNKNOWN
+
+    def words(field: str) -> Callable[[Any], str]:
+        return lambda d: _unlinked(getattr(d, field, None) or "") if known else UNKNOWN
+
+    def inviter_mention(d: Any) -> str:
+        if not known:
+            return UNKNOWN
+        return f"<@{d.inviter_id}>" if getattr(d, "inviter_id", None) else ""
+
+    return Thing(details, code, {
+        "code": code,
+        "uses": number("uses"),
+        "max_uses": number("max_uses"),
+        "max_age": number("max_age"),
+        "temporary": lambda d: _boolean(known and bool(getattr(d, "temporary", False))),
+        "channel": number("channel_id"),
+        "created_at": date("created_at", stamp),
+        "expires_at": date("expires_at", stamp),
+        "created_ago": date("created_at", relative),
+        "expires_in": date("expires_at", relative),
+        "inviter": words("inviter_name"),
+        "inviter_username": words("inviter_username"),
+        "inviter_global_name": words("inviter_global_name"),
+        "inviter_mention": inviter_mention,
+        "inviter_id": number("inviter_id"),
     })

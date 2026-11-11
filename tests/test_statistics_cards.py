@@ -120,6 +120,39 @@ class Drawing(unittest.TestCase):
         self.assertEqual(draw.clusters("1\ufe0f\u20e3!"), ["1\ufe0f\u20e3", "!"], "a keycap")
         self.assertEqual(draw.clusters("\U0001F44D\U0001F3FD"), ["\U0001F44D\U0001F3FD"], "a skin tone")
 
+    def test_a_joined_chain_stays_one_cluster_however_long_it_is(self):
+        kiss = "\U0001F469\U0001F3FB\u200d\u2764\ufe0f\u200d\U0001F48B\u200d\U0001F468\U0001F3FC"  # ten code points, the longest emoji Unicode defines
+        self.assertEqual(draw.clusters("a" + kiss + "b"), ["a", kiss, "b"])
+        self.assertEqual(draw.clusters("a\u200d" + kiss), ["a\u200d" + kiss], "an emoji after a joiner is never cut through")
+        self.assertNotIn(("text", "\ufe0f"), draw.runs(kiss + "\ufe0f"), "a selector after the longest emoji stays with it")
+        chain = "\u200d".join(chr(0x1F600 + index) for index in range(16))  # 31 code points, as a 32-character name can hold
+        self.assertEqual(draw.clusters(chain), [chain])
+        asked = []
+        kept = draw._Pictures(lambda cluster: asked.append(cluster) or None, entries=10, weight=10_000)
+        kept(chain)
+        self.assertEqual(asked, [chain], "a cluster of any length is drawn, and the weight bound holds what is kept")
+        picture = draw.emoji_picture(chain)
+        if picture is not None:
+            self.assertTrue(picture.width <= 420 and picture.height <= 180, "every picture is cut from one sheet of 420x180")
+
+    def test_the_emoji_pictures_kept_stay_under_a_weight_as_well_as_a_count(self):
+        made = []
+
+        def drawn(cluster):
+            made.append(cluster)
+            return Image.new("RGBA", (300, 150), (220, 40, 40, 255))  # 180,000 bytes
+        kept = draw._Pictures(drawn, entries=100, weight=1_000_000)
+        for index in range(40):
+            self.assertIsNotNone(kept(chr(0x1F600 + index)))
+        self.assertLessEqual(kept.cache_info().weight, 1_000_000)
+        self.assertEqual(kept.cache_info().currsize, 5, "five pictures of 180,000 bytes fit under a million")
+        kept(chr(0x1F600 + 39))
+        self.assertEqual(len(made), 40, "the newest is kept and not drawn again")
+        kept(chr(0x1F600))
+        self.assertEqual(len(made), 41, "the oldest was dropped and is drawn again")
+        self.assertEqual(draw.emoji_picture.cache_info().maxsize, draw.EMOJI_KEPT)
+        self.assertLessEqual(draw.EMOJI_KEPT_BYTES, 32 * 1024 * 1024)
+
     def test_an_emoji_draws_in_color_where_it_sits_in_the_text(self):
         with stand_in_emoji_font():
             card = draw.Card(200)

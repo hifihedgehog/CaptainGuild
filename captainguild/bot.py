@@ -153,6 +153,10 @@ class Bot(commands.Bot):
         self.tree.on_error = self._on_tree_error
         self.after_invoke(self._after_command)
 
+    def _get_state(self, **options: Any) -> member_lists.State:
+        """discord.py's connection state with the one change `members.State` explains. Same arguments as discord.py's own (client.py, Client._get_state)."""
+        return member_lists.State(dispatch=self.dispatch, handlers=self._handlers, hooks=self._hooks, http=self.http, **options)
+
     # ---- startup ----
 
     async def prepare(self, module_classes: list[type[Module]]) -> None:

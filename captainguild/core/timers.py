@@ -144,11 +144,35 @@ class Timers:
             return 0
         passed_over, held = self._passed_over()
         rows = await self.db.all(f"SELECT * FROM timers WHERE due_at <= ? {passed_over} ORDER BY due_at LIMIT 200", (now, *held))
-        for row in rows:
+        # The batch was read a while ago. A row canceled or moved since then has to stay that way, or a permanent ban could be undone by the old
+        # temporary one, so each row is read again just before it runs. A row found moved most often means a handler moved a run of them, as
+        # greetings does with deletes Discord keeps waiting, so the rest of the batch is then read in one query, every row in it moved or canceled
+        # is passed over, and the next row still due runs from that read, since nothing else has been awaited in between.
+        passed: set[int] = set()
+        rest: dict[int, dict] | None = None
+        for position, batched in enumerate(rows):
             if not self._unpaused.is_set():
                 break
+            if batched["id"] in passed:
+                continue
+            if rest is None:
+                row = await self.db.one("SELECT * FROM timers WHERE id = ?", (batched["id"],))
+            else:
+                row, rest = rest[batched["id"]], None
+            if row is None or row["due_at"] != batched["due_at"]:
+                later = [other for other in rows[position + 1:] if other["id"] not in passed]
+                rest = await self._read_again(later)
+                passed.update(other["id"] for other in later if other["id"] not in rest or rest[other["id"]]["due_at"] != other["due_at"])
+                continue
             await self._run_one(row)
         return len(rows)
+
+    async def _read_again(self, batched: list[dict]) -> dict[int, dict]:
+        """These rows of a batch as they stand now, by ID, in one query. A row canceled since is missing."""
+        if not batched:
+            return {}
+        found = await self.db.all(f"SELECT * FROM timers WHERE id IN ({', '.join('?' * len(batched))})", tuple(row["id"] for row in batched))
+        return {row["id"]: row for row in found}
 
     def _passed_over(self) -> tuple[str, tuple[int, ...]]:
         """SQL that leaves out servers on hold, so their rows can't fill a batch ahead of every other server's, or keep the loop waking for work it won't do."""
@@ -156,10 +180,9 @@ class Timers:
             return "", ()
         return f"AND (guild_id IS NULL OR guild_id NOT IN ({', '.join('?' * len(self._held))}))", tuple(self._held)
 
-    async def _run_one(self, batched: dict) -> None:
-        # The batch was read a while ago. A row canceled or moved since then has to stay that way, or a permanent ban could be undone by the old temporary one.
-        row = await self.db.one("SELECT * FROM timers WHERE id = ?", (batched["id"],))
-        if row is None or row["due_at"] != batched["due_at"] or row["guild_id"] in self._held:
+    async def _run_one(self, row: dict) -> None:
+        """Run one row, just read again and still due."""
+        if row["guild_id"] in self._held:
             return
         handler = self.handlers.get(row["kind"])
         if handler is None:

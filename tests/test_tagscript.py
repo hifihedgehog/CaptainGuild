@@ -4,13 +4,21 @@ import random
 import time
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 from captainguild.core import messages
+from captainguild.core.durations import ordinal
+from captainguild.core.invitewatch import Invite
 from captainguild.core.tagscript import (
     LimitReached, MAX_BLOCKS, MAX_COMMANDS, MAX_REACTIONS, MAX_VALUE, Interpreter, Scope, clean_template_message, fit_payload, render_payload, render_strict, render_text, split_block,
 )
+from captainguild.core.tagscript import numerals, objects
 from captainguild.core.tagscript.clock import describe_gap, format_time, parse_when
 from captainguild.core.tagscript.mathexpr import MAX_DEPTH, evaluate
+from captainguild.core.tagscript import clock as clock_module
+from captainguild.core.tagscript import engine as engine_module
+from captainguild.core.tagscript import text as text_module
+from captainguild.core.tagscript.text import plain, written_by_template
 from captainguild.core.validate import Invalid
 from tests.fakes import FakeChannel, FakeGuild, FakeMember
 
@@ -30,6 +38,11 @@ def run(template: str, **scope) -> Interpreter:
     interpreter = Interpreter(Scope(**scope))
     interpreter.output = interpreter.render(template)
     return interpreter
+
+
+def arabic(grouped: str) -> str:
+    """A number written with commas, as the arabic format writes it: Arabic-Indic digits (U+0660 on) and the Arabic thousands separator (U+066C)."""
+    return "".join(chr(0x066C) if character == "," else chr(0x0660 + int(character)) for character in grouped)
 
 
 class VariablesTest(unittest.TestCase):
@@ -909,4 +922,319 @@ class MathDepthTest(unittest.TestCase):
     def test_a_function_counts_once_too(self):
         self.assertEqual(evaluate("abs(" * MAX_DEPTH + "1" + ")" * MAX_DEPTH), "1.0")
         self.assertIsNone(evaluate("abs(" * (MAX_DEPTH + 1) + "1" + ")" * (MAX_DEPTH + 1)))
+
+
+class NumberFormatsTest(unittest.TestCase):
+    EDGES = (0, 1, 2, 3, 4, 10, 11, 12, 13, 14, 20, 21, 22, 23, 100, 101, 111, 112, 113, 121, 999, 1000, 1011, 8102, 123456, 1000000, 1234567, 10 ** 12, -1, -2, -11, -21, -8102)
+
+    def test_ord_with_no_format_is_what_it_always_gave(self):
+        for number in self.EDGES:
+            self.assertEqual(text("{ord:%d}" % number), ordinal(number), number)
+            self.assertEqual(numerals.ordinal(number, "commas"), ordinal(number), number)
+        self.assertEqual(text("{ord:8102}"), "8,102nd")
+        self.assertEqual(text("{ord:8102.0}"), "8,102nd")
+
+    def test_a_format_nobody_has_heard_of_changes_nothing(self):
+        self.assertEqual(text("{ord(roman):8102}"), "8,102nd")
+        self.assertEqual(text("{ord():8102}"), "8,102nd")
+        self.assertEqual(text("{ord(plain):word}"), "word")
+
+    def test_ord_in_each_format(self):
+        for style, expected in [("plain", "1234567th"), ("commas", "1,234,567th"), ("dots", "1.234.567th"), ("indian", "12,34,567th"), ("arabic", arabic("1,234,567") + "th"), ("PLAIN", "1234567th"), (" dots ", "1.234.567th")]:
+            self.assertEqual(text("{ord(%s):1234567}" % style), expected, style)
+
+    def test_the_ending_follows_the_number_in_every_format(self):
+        for number, ending in [(0, "th"), (1, "st"), (2, "nd"), (3, "rd"), (4, "th"), (11, "th"), (12, "th"), (13, "th"), (21, "st"), (101, "st"), (111, "th"), (112, "th"), (113, "th"), (1000000, "th"), (1000001, "st"), (-1, "st"), (-12, "th")]:
+            for style in numerals.FORMATS:
+                self.assertTrue(text("{ord(%s):%d}" % (style, number)).endswith(ending), (number, style))
+            self.assertEqual(text("{ord(plain):%d}" % number), f"{number}{ending}")
+
+    def test_num_groups_with_no_ending(self):
+        for style, expected in [(None, "1,234,567"), ("plain", "1234567"), ("commas", "1,234,567"), ("dots", "1.234.567"), ("indian", "12,34,567"), ("arabic", arabic("1,234,567"))]:
+            self.assertEqual(text("{num(%s):1234567}" % style if style else "{num:1234567}"), expected, style)
+
+    def test_small_and_negative_numbers(self):
+        for style in ("plain", "commas", "dots", "indian"):
+            self.assertEqual([numerals.grouped(number, style) for number in (0, 7, 999)], ["0", "7", "999"], style)
+        self.assertEqual([numerals.grouped(number, "arabic") for number in (0, 7, 999, 1000)], [arabic("0"), arabic("7"), arabic("999"), arabic("1,000")])
+        self.assertEqual([numerals.grouped(-8102, style) for style in ("plain", "commas", "dots", "indian", "arabic")], ["-8102", "-8,102", "-8.102", "-8,102", "-" + arabic("8,102")])
+        self.assertEqual([numerals.grouped(number, "indian") for number in (999, 1000, 99999, 100000, 9999999, 10000000)], ["999", "1,000", "99,999", "1,00,000", "99,99,999", "1,00,00,000"])
+
+    def test_num_leaves_what_is_not_a_whole_number_as_written(self):
+        for template in ("{num:word}", "{num:12.5}", "{num:}", "{num(roman):5}", "{num:" + "9" * 41 + "}", "{num}"):
+            self.assertEqual(text(template), template, template)
+        self.assertEqual(text("{num:{m:1000+234}}"), "1,234")
+
+    def test_a_variable_called_num_or_title_still_reads(self):
+        self.assertEqual(text("{=(num):a,b,c}{num} {num(2):,}"), "a,b,c b")
+        self.assertEqual(text("{=(title):one two}{title} {title(2)}"), "one two two")
+        self.assertEqual(text("{=(title):a,b,c}{title(2):,}"), "b", "a position and a divider read the variable, as they did before the block existed")
+        self.assertEqual(text("{=(since):then}{since} {since(1)}"), "then then")
+
+    def test_a_number_from_outside_stays_data(self):
+        self.assertEqual(text("{if({num:{count}}==1,234):yes|no}", extra={"count": "1234"}), "yes")
+        self.assertEqual(text("{if({num:{count}}==1,234):yes|no}", extra={"count": "1==1"}), "no", "what isn't a number stays as the member's text, which can't pass for a comparison")
+
+
+class OwnVariablesWinTest(unittest.TestCase):
+    """title, num and since are blocks newer than templates that may hold a variable by one of those names. That variable wins in every
+    form, so a stored template reads as it did before the blocks existed, which is how a variable by any other name reads."""
+
+    NOW = at(2026, 1, 2, 3, 4, 5)
+    FORMS = ("{%s}", "{%s:x}", "{%s:}", "{%s:5}", "{%s:1234567}", "{%s:2024-01-01}", "{%s:2024-01-01 10:00:00}", "{%s(2)}", "{%s(2):,}", "{%s(+2)}",
+             "{%s(commas):1234}", "{%s(dots):5}", "{%s(2024-01-01):2024-01-03}")
+
+    def test_a_template_s_own_variable_wins_in_every_form(self):
+        for name in ("title", "num", "since", "Title", "NUM"):
+            for value in ("My Title", "a,b,c", "7", "2025-01-01"):
+                for form in self.FORMS:
+                    own = "{=(%s):%s}" % (name, value) + form % name
+                    other = "{=(other):%s}" % value + form % "other"
+                    self.assertEqual(text(own, now=self.NOW), text(other, now=self.NOW), own)
+        self.assertEqual(text("{=(title):My Title}{title:x}"), "My Title", "the review's case, as it printed before the block existed")
+
+    def test_a_variable_from_outside_wins_the_same_way(self):
+        for name in ("title", "num", "since"):
+            for form in self.FORMS:
+                self.assertEqual(text(form % name, now=self.NOW, extra={name: "Alert: 5 new"}), text(form % "other", now=self.NOW, extra={"other": "Alert: 5 new"}), (name, form))
+
+    def test_a_block_s_name_is_put_in_lower_case_once(self):
+        # A name is all of a block's text when it holds no colon or parenthesis, so for braces nested deep it grows with the depth, and every
+        # extra pass over it costs a server time it pays for.
+        calls = []
+
+        class Counting(str):
+            def lower(self):
+                calls.append(str(self))
+                return str.lower(self)
+
+        with mock.patch.object(engine_module, "plain", lambda value: Counting(text_module.plain(value))):
+            self.assertEqual(text("{upper:x}{title:y}{=(num):5}{num:7}{nope}"), "XY5{nope}")
+        self.assertEqual(calls, ["upper", "title", "=", "num", "nope"], "once for each block")
+
+    def test_with_no_variable_of_that_name_the_blocks_still_work(self):
+        self.assertEqual(text("{title:tall ship} {num:1234567} {since:2025-01-02 03:04:05}", now=self.NOW), "Tall Ship 1,234,567 1 year")
+        self.assertEqual(text("{=(other):x}{title:tall ship} {num(dots):1234}", extra={"titles": "y"}), "Tall Ship 1.234")
+
+
+class FormatTextTest(unittest.TestCase):
+    """A strf format the template wrote, read with a date from outside: the result stays data as a whole, as it always did, and the format's
+    own text still counts as the template's, so a mention typed in it can ping where a greeting allows."""
+
+    def test_what_it_gives_and_how_it_splits_stay_as_they_were(self):
+        outside = {"when": "2020-03-01 10:00:00"}
+        self.assertEqual(text("{strf({when}):Joined %Y. Ask <@123456789012345678>.}", extra=outside), "Joined 2020. Ask <@123456789012345678>.")
+        self.assertEqual(text("{if(1==1):{strf({when}):%Y|b}|no}", extra=outside), "2020|b", "its pipe is data, so the if divides only at its own")
+        self.assertEqual(text("{if({strf({when}):%Y}==2020):yes|no}", extra=outside), "yes")
+        self.assertEqual(text("{title:{strf({when}):joined in %B, it's %Y}}", extra=outside), "Joined In March, It's 2020")
+        self.assertEqual(text("{upper:{strf({when}):joined %b}} {lower:{strf({when}):JOINED %b}}", extra=outside), "JOINED MAR joined mar")
+        self.assertEqual(text("{=(v):{strf({when}):a b %Y}}{v(2)} {v(3)} {replace(b,c):{v}}", extra=outside), "b 2020 a c 2020")
+        self.assertEqual(text("{list(1):{strf({when}):x~y~%Y}} {strf({when}):%Y{when}}", extra=outside), "y 20202020-03-01 10:00:00")
+
+    def test_the_format_s_own_text_counts_as_the_template_s_and_the_date_s_doesn_t(self):
+        marked = Interpreter(Scope(extra={"when": "2020-03-01 10:00:00"})).render_marked("{strf({when}):Ask <@123456789012345678> in %Y.}")
+        shown = plain(marked)
+        self.assertEqual(shown, "Ask <@123456789012345678> in 2020.")
+        mention = shown.index("<@")
+        self.assertTrue(written_by_template(marked, mention, mention + len("<@123456789012345678>")))
+        year = shown.index("2020")
+        self.assertFalse(written_by_template(marked, year, year + 4), "the year came from outside")
+        upper = Interpreter(Scope(extra={"when": "2020-03-01"})).render_marked("{upper:{strf({when}):ask <@123456789012345678>}}")
+        self.assertTrue(written_by_template(upper, 4, 25), "and it stays the template's through a block that changes its letters")
+        beside = Interpreter(Scope(extra={"when": "2020-03-01", "x": "<@123456789012345678>"})).render_marked("{upper:{strf({when}):ask }{x}}")
+        self.assertEqual(plain(beside), "ASK <@123456789012345678>")
+        self.assertFalse(written_by_template(beside, 4, 25), "while text from outside right beside it stays outside")
+        format_from_outside = Interpreter(Scope(extra={"when": "2020-03-01", "f": "<@123456789012345678>"})).render_marked("{strf({when}):{f}}")
+        self.assertFalse(written_by_template(format_from_outside, 0, 21), "a format from outside stays outside")
+
+    def test_a_strf_inside_another_s_format_keeps_its_own_text_the_template_s(self):
+        outside = {"when": "2020-03-01 10:00:00", "then": "2021-04-02 11:00:00", "f": "%Y <@123456789012345678>"}
+        marked = Interpreter(Scope(extra=outside)).render_marked("{strf({when}):{strf({then}):Ask <@123456789012345678> on %d, 100%%} %Y}")
+        shown = plain(marked)
+        self.assertEqual(shown, "Ask <@123456789012345678> on 02, 100% 2020")
+        mention = shown.index("<@")
+        self.assertTrue(written_by_template(marked, mention, mention + len("<@123456789012345678>")), "the inner format's own text")
+        for made in ("02", "2020"):
+            at = shown.index(made)
+            self.assertFalse(written_by_template(marked, at, at + len(made)), made)
+        # The text reads as it always did: a code is found in the format's plain text, whatever spelled it.
+        self.assertEqual(text("{strf({when}):{strf({then}):%%}Y} {strf({when}):{f}}", extra=outside), "2020 2020 <@123456789012345678>")
+        from_outside = Interpreter(Scope(extra=outside)).render_marked("{strf({when}):{f}}")
+        self.assertEqual(plain(from_outside), "2020 <@123456789012345678>")
+        self.assertFalse(written_by_template(from_outside, 5, 26), "text from outside in a format stays outside")
+
+    def test_the_marked_result_takes_one_pass_over_the_format(self):
+        # One pass over the pattern, either way, makes each distinct code's text once. With a table and a literal text, the pattern's own text
+        # comes from the literal and the codes' text goes through the table, as strf marks them with a date from outside: the whole still reads
+        # as format_time's.
+        moment = datetime.datetime(2020, 3, 1, 10, 4, 5, tzinfo=UTC)
+        pattern = "%a, %-d %B %Y at %H:%M, %%, %Q, %^a, %3d" * 3  # no shorthand such as %c, whose codes are read through it again
+        field = clock_module._FIELD
+        found = [match.group(0) for match in field.finditer(pattern)]
+        made = "".join(format_time(moment, code) for code in found)
+        own = field.sub("", pattern).translate(text_module.KEEPING)
+        calls, scans = [], []
+        real = clock_module._field_text
+
+        def counted(at, match):
+            calls.append(match.group(0))
+            return real(at, match)
+
+        class Scanned:
+            def __getattr__(self, name):
+                scans.append(name)
+                return getattr(field, name)
+
+        for tables in ({}, {"codes": text_module.SHIELDING, "literal": pattern.translate(text_module.KEEPING)}):
+            calls.clear()
+            scans.clear()
+            with mock.patch.object(clock_module, "_field_text", counted), mock.patch.object(clock_module, "_FIELD", Scanned()):
+                marked = clock_module.format_time(moment, pattern, **tables)
+            self.assertEqual(len(scans), 1, "one pass over the pattern")
+            self.assertEqual(sorted(calls), sorted(set(found)), "each distinct code made once")
+            self.assertEqual(plain(marked), format_time(moment, pattern))
+        self.assertEqual(len(found), 30)
+        kept = {chr(code) for code in text_module.KEEPING.values()}
+        self.assertEqual("".join(ch for ch in marked if ch in kept), own, "the pattern's own text through its table")
+        self.assertEqual("".join(ch for ch in marked if ch not in kept), text_module.shield(made), "the codes' text through theirs")
+
+    def test_nobody_can_type_the_template_s_marks(self):
+        self.assertEqual(text("[{x}]", extra={"x": "a" + chr(0x10FE41) + chr(0x10FF41) + "b"}), "[ab]")
+        self.assertEqual(text("[" + chr(0x10FE41) + "]{=(a):b}"), "[]")
+
+
+class TitleTest(unittest.TestCase):
+    def test_each_word_starts_with_a_capital_and_the_rest_stays(self):
+        for written, expected in [("tall ship", "Tall Ship"), ("TALL ship", "TALL Ship"), ("mcDonald o'neil", "McDonald O'neil"), ("it's here", "It's Here"), ("john.doe", "John.Doe"),
+                                  ("3rd time", "3rd Time"), ("snake_case name", "Snake_case Name"), ("école normale", "École Normale"), ("straße ßen", "Straße ßen"), ("", "")]:
+            self.assertEqual(text("{title:%s}" % written), expected, written)
+
+    def test_a_word_can_start_in_the_template_and_end_in_a_name(self):
+        self.assertEqual(text("{title:mc{name} and {name}}", extra={"name": "donald"}), "Mcdonald And Donald")
+
+    def test_a_name_s_punctuation_stays_data(self):
+        self.assertEqual(text("{if(1==1):{title:{name}}|else}", extra={"name": "a|b"}), "A|B", "a pipe in a name mustn't become the divider of the if around it")
+        self.assertEqual(text("{if(1==2):then|{title:{name}}}", extra={"name": "x)|y:z"}), "X)|Y:Z")
+
+
+class SinceTest(unittest.TestCase):
+    NOW = at(2026, 1, 2, 3, 4, 5)
+
+    def test_one_unit_the_largest(self):
+        for date, expected in [("2020-02-03 04:05:06", "5 years"), ("2025-01-02 03:04:05", "1 year"), ("2025-10-01 00:00:00", "3 months"), ("2025-12-20 00:00:00", "1 week"),
+                               ("2025-12-30 00:00:00", "3 days"), ("2026-01-02 01:00:00", "2 hours"), ("2026-01-02 03:03:05", "1 minute"), ("2026-01-02 03:04:01", "4 seconds"),
+                               ("2026-01-02 03:04:05", "now"), ("2027-06-01 00:00:00", "1 year")]:
+            self.assertEqual(text("{since:%s}" % date, now=self.NOW), expected, date)
+
+    def test_between_two_dates_and_from_a_unix_time(self):
+        self.assertEqual(text("{since(2026-01-01 00:00:00):2026-01-03 12:00:00}"), "2 days")
+        self.assertEqual(text("{since:%d}" % at(2025, 1, 1), now=self.NOW), "1 year")
+
+    def test_td_still_names_three(self):
+        self.assertEqual(text("{td:2020-02-03 04:05:06}", now=self.NOW), "5 years, 10 months and 4 weeks")
+        self.assertEqual(describe_gap(datetime.datetime(2022, 1, 1, tzinfo=UTC), datetime.datetime(2025, 3, 1, tzinfo=UTC), 1), "3 years")
+
+    def test_what_is_not_a_date_stays_as_written(self):
+        for template in ("{since:someday}", "{since(someday):2026-01-01 00:00:00}", "{since:}", "{since}"):
+            self.assertEqual(text(template), template)
+
+
+class GreetingObjectsTest(unittest.TestCase):
+    def setUp(self):
+        self.guild = FakeGuild("Harbor")
+        self.member = FakeMember(self.guild, "ada", joined=datetime.datetime(2025, 6, 7, 8, 9, 10, tzinfo=UTC), created=datetime.datetime(2020, 2, 3, 4, 5, 6, tzinfo=UTC))
+        self.invite = Invite(code="harbor", uses=12, max_uses=50, max_age=3600, temporary=True, channel_id=444, created_at=datetime.datetime(2025, 12, 1, tzinfo=UTC),
+                             expires_at=datetime.datetime(2026, 2, 1, tzinfo=UTC), inviter_id=555, inviter_name="Grace", inviter_username="grace", inviter_global_name="Grace")
+
+    def read(self, template: str, **changes) -> str:
+        return render_text(template, Scope(guild=self.guild, member=self.member, **changes))
+
+    def test_what_a_person_adds(self):
+        self.member.global_name = "Ada Lovelace"
+        self.member.discriminator = "1234"
+        for prop, expected in [("username", "ada"), ("global_name", "Ada Lovelace"), ("profile_name", "Ada Lovelace"), ("profile_avatar", "https://cdn.example/avatar.png"),
+                               ("discriminator", "1234"), ("bot", "false"), ("pending", "false"), ("created_ago", "<t:1580702706:R>"), ("joined_ago", "<t:1749283750:R>")]:
+            self.assertEqual(self.read("{user(%s)}" % prop), expected, prop)
+
+    def test_a_profile_name_is_never_the_server_nickname(self):
+        self.member.nick, self.member.global_name = "Countess", "Ada Lovelace"
+        self.assertEqual(self.read("{user}|{user(nick)}|{user(profile_name)}|{user(global_name)}|{user(name)}"), "Countess|Countess|Ada Lovelace|Ada Lovelace|ada")
+
+    def test_a_profile_name_without_a_global_name_is_the_username(self):
+        self.member.nick, self.member.global_name = None, None
+        self.assertEqual(self.read("{user(profile_name)}|[{user(global_name)}]"), "ada|[]")
+        self.member.nick = "Countess"
+        self.assertEqual(self.read("{user}|{user(profile_name)}"), "Countess|ada")
+
+    def test_a_profile_name_keeps_the_old_tag_of_an_account_that_has_one(self):
+        self.member.global_name, self.member.discriminator = None, "1234"
+        self.assertEqual(self.read("{user(profile_name)}"), "ada#1234")
+        for tag in ("0", "", None):
+            self.member.discriminator = tag
+            self.assertEqual(self.read("{user(profile_name)}"), "ada", tag)
+        self.member.global_name, self.member.discriminator = "Ada Lovelace", "1234"
+        self.assertEqual(self.read("{user(profile_name)}"), "Ada Lovelace")
+
+    def test_a_profile_avatar_is_never_the_server_avatar(self):
+        self.member.display_avatar = SimpleNamespace(url="https://cdn.example/in-this-server.png")
+        self.assertEqual(self.read("{user(avatar)} {user(profile_avatar)}"), "https://cdn.example/in-this-server.png https://cdn.example/avatar.png")
+        self.member.avatar, self.member.default_avatar = None, SimpleNamespace(url="https://cdn.example/default.png")
+        self.assertEqual(self.read("{user(profile_avatar)}"), "https://cdn.example/default.png", "an account with no picture has Discord's default one")
+
+    def test_a_name_someone_chose_cant_make_a_link(self):
+        self.member.global_name = "[free nitro](https://a.test)"
+        self.assertEqual(self.read("{user(global_name)} {user(profile_name)}"), "[free nitro]\\(https://a.test) [free nitro]\\(https://a.test)")
+
+    def test_a_bot_and_someone_on_the_rules_screen(self):
+        robot = FakeMember(self.guild, "robot", bot=True, pending=True)
+        self.assertEqual(render_text("{user(bot)} {user(pending)}", Scope(member=robot)), "true true")
+        self.assertEqual(self.read("{if({user(bot)}==true):bot|person}"), "person")
+        self.assertEqual(render_text("{if({user(bot)}==true):bot|person}", Scope(member=robot)), "bot")
+
+    def test_someone_with_less_to_read(self):
+        bare = SimpleNamespace(id=1, name="gone", display_name="gone", mention="<@1>", joined_at=None, created_at=None)
+        self.assertEqual(text("[{user(global_name)}][{user(discriminator)}][{user(bot)}][{user(pending)}][{user(joined_ago)}][{user(created_ago)}]", member=bare), "[][0][false][false][][]")
+        self.assertEqual(text("[{user(profile_name)}][{user(profile_avatar)}]", member=bare), "[gone][]")
+
+    def test_a_server_s_splash_and_banner(self):
+        self.assertEqual(self.read("[{server(splash)}][{server(banner)}]"), "[][]")
+        self.guild.splash = SimpleNamespace(url="https://cdn.example/splash.png")
+        self.guild.banner = SimpleNamespace(url="https://cdn.example/banner.png")
+        self.assertEqual(self.read("{server(splash)} {server(banner)}"), "https://cdn.example/splash.png https://cdn.example/banner.png")
+
+    def test_the_invite_and_its_properties(self):
+        extra = {"invite": objects.invite(self.invite)}
+        for prop, expected in [("code", "harbor"), ("uses", "12"), ("max_uses", "50"), ("max_age", "3600"), ("temporary", "true"), ("channel", "444"), ("created_at", "2025-12-01 00:00:00"),
+                               ("expires_at", "2026-02-01 00:00:00"), ("created_ago", "<t:1764547200:R>"), ("expires_in", "<t:1769904000:R>"), ("inviter", "Grace"),
+                               ("inviter_username", "grace"), ("inviter_global_name", "Grace"), ("inviter_mention", "<@555>"), ("inviter_id", "555")]:
+            self.assertEqual(self.read("{invite(%s)}" % prop, extra=extra), expected, prop)
+        self.assertEqual(self.read("{invite}", extra=extra), "harbor")
+        self.assertEqual(self.read("{invite(shoe)}", extra=extra), "{invite(shoe)}")
+        self.assertEqual(set(objects.invite(None).properties), {"code", "uses", "max_uses", "max_age", "temporary", "channel", "created_at", "expires_at", "created_ago", "expires_in",
+                                                                "inviter", "inviter_username", "inviter_global_name", "inviter_mention", "inviter_id"})
+
+    def test_an_invite_nobody_could_tell(self):
+        extra = {"invite": objects.invite(None)}
+        self.assertEqual(self.read("{invite}|{invite(code)}|{invite(inviter)}|{invite(inviter_mention)}", extra=extra), "Unknown|Unknown|Unknown|Unknown")
+        self.assertEqual(self.read("{invite(inviter_username)}|{invite(inviter_global_name)}", extra=extra), "Unknown|Unknown")
+        self.assertEqual(self.read("{invite(uses)}|{invite(max_uses)}|{invite(max_age)}|{invite(channel)}|{invite(inviter_id)}|{invite(temporary)}", extra=extra), "0|0|0|0|0|false")
+        self.assertEqual(self.read("[{invite(created_at)}][{invite(expires_at)}][{invite(created_ago)}][{invite(expires_in)}]", extra=extra), "[][][][]")
+        self.assertEqual(self.read("{if({invite(inviter_id)}!=0):known|unknown}", extra=extra), "unknown")
+
+    def test_a_vanity_link_has_no_inviter_and_no_end(self):
+        extra = {"invite": objects.invite(Invite(code="harbor", uses=900))}
+        self.assertEqual(self.read("{invite}|{invite(uses)}|[{invite(inviter)}]|[{invite(inviter_mention)}]|{invite(inviter_id)}|[{invite(expires_at)}]|{invite(max_uses)}", extra=extra), "harbor|900|[]|[]|0|[]|0")
+        self.assertEqual(self.read("[{invite(inviter_username)}][{invite(inviter_global_name)}]", extra=extra), "[][]")
+
+    def test_an_inviter_s_name_is_data(self):
+        hostile = "[free nitro](https://a.test) {delete} a|b"
+        for field, prop in [("inviter_name", "inviter"), ("inviter_username", "inviter_username"), ("inviter_global_name", "inviter_global_name")]:
+            out = self.read("{if(1==1):{invite(%s)}|else}" % prop, extra={"invite": objects.invite(Invite(code="x", inviter_id=5, **{field: hostile}))})
+            self.assertEqual(out, "[free nitro]\\(https://a.test) {delete} a|b", prop)
+
+    def test_without_a_greeting_the_names_stay_as_written(self):
+        self.assertEqual(self.read("{joined} {invite} {invite(uses)}"), "{joined} {invite} {invite(uses)}")
+
+    def test_the_joined_count_is_a_number_other_blocks_take(self):
+        self.assertEqual(self.read("{joined} {ord:{joined}} {ord(plain):{joined}} {num(dots):{joined}}", extra={"joined": "64097"}), "64097 64,097th 64097th 64.097")
 

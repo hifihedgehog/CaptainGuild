@@ -591,6 +591,103 @@ button.dc-remote:hover { color: #fff; border-color: #949ba4; }
 @media (max-width: 900px) { .stats-ranking { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 560px) { .stats-bar-right { margin-left: 0; } .stats-compare th[scope=row] { width: 120px; } }
 
+/* ---- welcome image ---- */
+.wc-ready { display: grid; grid-template-columns: minmax(320px, 5fr) minmax(0, 6fr); gap: 18px; align-items: start; }
+.wc-ready-left { position: sticky; top: calc(var(--header-height) + 12px); display: grid; gap: 18px; min-width: 0; max-height: calc(100vh - var(--header-height) - 24px); overflow-y: auto; }
+.wc-which { margin: -6px 0 12px; }
+.wc-cards, .wc-designer-main, .wc-designer-side { display: grid; gap: 18px; min-width: 0; }
+.wc-ready-left .card + .card, .wc-cards .card + .card, .wc-designer-main .card + .card, .wc-designer-side .card + .card { margin-top: 0; }
+.wc-preview, .wc-stage { background-color: var(--panel-deep); background-image: repeating-conic-gradient(rgb(128 128 128 / 22%) 0% 25%, transparent 0% 50%); background-size: 16px 16px; }
+/* The preview is never shown larger than life, and a tall picture leaves room for what is under it. */
+.wc-preview { display: block; width: auto; height: auto; max-width: 100%; max-height: 56vh; margin: 0 auto; border-radius: 6px; }
+.wc-notes { margin-top: 8px; }
+.wc-notes .notice { margin: 8px 0 0; }
+.wc-color { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wc-solid { width: 124px; }
+.wc-solid input, .wc-narrow input { min-width: 0; }
+.wc-narrow { max-width: 200px; }
+input.wc-bad { border-color: var(--bad); }
+.wc-color-list { display: grid; gap: 6px; margin-bottom: 8px; }
+.wc-color-row { display: flex; align-items: center; gap: 6px; }
+.wc-color-row .field { margin: 0; }
+.wc-group { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); margin: 10px 0 6px; }
+.wc-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+.wc-thumb { position: relative; }
+.wc-thumb-pick, .wc-font, .wc-layout { display: block; width: 100%; padding: 0; background: var(--panel-deep); border: 2px solid var(--line); border-radius: 6px; overflow: hidden; cursor: pointer; color: var(--text); font: inherit; text-align: left; }
+.wc-thumb-pick:hover, .wc-font:hover, .wc-layout:hover { border-color: var(--input-hover); }
+.wc-thumb-pick:focus-visible, .wc-font:focus-visible, .wc-layout:focus-visible, .wc-place:focus-visible, .wc-set:focus-visible, .wc-layer-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wc-thumb.on > .wc-thumb-pick, .wc-thumb-pick.on, .wc-font.on, .wc-layout.on { border-color: var(--accent); box-shadow: 0 0 0 2px rgb(0 162 248 / 25%); }
+.wc-thumb-pick img { display: block; width: 100%; height: auto; aspect-ratio: 8 / 3; object-fit: cover; }
+.wc-thumb-name, .wc-font-name { display: block; padding: 3px 8px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wc-thumb-remove { position: absolute; top: 4px; right: 4px; background: rgb(0 0 0 / 60%); color: #fff; }
+.wc-set { display: inline-flex; width: 56px; height: 26px; padding: 0; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; cursor: pointer; background: none; }
+.wc-set span { flex: 1; }
+.wc-set:hover { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wc-fill-tabs { margin-bottom: 10px; }
+.wc-fonts { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.wc-font img, .wc-layout img { display: block; width: 100%; height: auto; }
+.wc-layouts { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; align-items: start; }
+.wc-layout-name { display: block; padding: 4px 8px; font-size: 13px; }
+.wc-insert { margin-top: 6px; gap: 6px; }
+.wc-template textarea { font-family: var(--mono); font-size: 13px; }
+.wc-positions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.wc-nine { display: grid; grid-template-columns: repeat(3, 36px); gap: 3px; }
+.wc-place { position: relative; width: 36px; height: 28px; padding: 0; background: var(--input); border: 1px solid var(--line); border-radius: 3px; cursor: pointer; }
+.wc-place span { position: absolute; width: 12px; height: 6px; margin: -3px 0 0 -6px; border-radius: 2px; background: var(--text-soft); left: 50%; top: 50%; }
+.wc-place-top_left span, .wc-place-left span, .wc-place-bottom_left span { left: 10px; }
+.wc-place-top_right span, .wc-place-right span, .wc-place-bottom_right span { left: 24px; }
+.wc-place-top_left span, .wc-place-top span, .wc-place-top_right span { top: 7px; }
+.wc-place-bottom_left span, .wc-place-bottom span, .wc-place-bottom_right span { top: 19px; }
+.wc-place.own { box-shadow: inset 0 0 0 2px var(--accent); }
+.wc-place.on { background: var(--accent); border-color: var(--accent); }
+.wc-place.on span { background: #fff; }
+.wc-designer { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 18px; align-items: start; margin-bottom: 18px; }
+/* Beside the layer list the picture stays in view while the page scrolls through a layer's settings. */
+.wc-designer-main { position: sticky; top: calc(var(--header-height) + 12px); }
+/* The room around the picture holds the handles of a layer that reaches its edge. What lies farther out is cut off. */
+.wc-stage-wrap { min-width: 0; overflow: hidden; padding: 36px 14px 14px; margin: -12px -14px 0; }
+.wc-stage { position: relative; margin: 0 auto; border-radius: 4px; outline: none; user-select: none; -webkit-user-select: none; }
+.wc-stage:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.wc-stage-img { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.wc-stage-wait { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-dim); }
+.wc-canvas { position: absolute; }
+.wc-box { position: absolute; box-sizing: border-box; border: 1px dashed transparent; cursor: move; }
+.wc-box:hover { border-color: rgb(255 255 255 / 75%); box-shadow: 0 0 0 1px rgb(0 0 0 / 45%); }
+.wc-box:focus { outline: none; }
+.wc-box:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+/* Only the selected layer keeps a finger's drag for itself. Everywhere else on the picture a swipe scrolls the page. */
+.wc-box.on { border: 1px solid var(--accent); box-shadow: 0 0 0 1px rgb(255 255 255 / 85%); touch-action: none; z-index: 1; }
+.wc-handle { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; box-sizing: border-box; background: #fff; border: 2px solid var(--accent); border-radius: 2px; touch-action: none; }
+.wc-handle.wc-turn { left: 50%; top: -28px; border-radius: 50%; cursor: grab; }
+.wc-turn-stem { position: absolute; left: 50%; top: -22px; width: 1px; height: 22px; background: var(--accent); }
+@media (pointer: coarse) {
+  .wc-handle { width: 22px; height: 22px; margin: -11px 0 0 -11px; }
+  .wc-handle.wc-turn { top: -42px; }
+  .wc-turn-stem { top: -31px; height: 31px; }
+  .wc-stage-wrap { padding-top: 56px; }
+}
+.wc-keys { margin: 8px 0 0; }
+.wc-numbers { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 0 10px; }
+.wc-numbers .field, .wc-panel .field { margin-bottom: 12px; }
+.wc-add { margin-bottom: 10px; gap: 6px; }
+.wc-layers { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); }
+.wc-layer { display: flex; align-items: center; gap: 2px; padding: 2px 4px; border-bottom: 1px solid var(--line); }
+.wc-layer:last-child { border-bottom: 0; }
+.wc-layer.on { background: var(--panel-deep); box-shadow: inset 3px 0 0 var(--accent); }
+.wc-layer.off .wc-layer-pick { opacity: .55; }
+.wc-layer-pick { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 6px; background: none; border: 0; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.wc-layer-pick span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wc-redo { transform: scaleX(-1); }
+.wc-start { width: auto; flex: 1; min-width: 150px; }
+@media (max-width: 1100px) {
+  .wc-designer { grid-template-columns: minmax(0, 1fr); }
+  .wc-designer-main { position: static; }
+}
+@media (max-width: 900px) {
+  .wc-ready { grid-template-columns: minmax(0, 1fr); }
+  .wc-ready-left { position: static; max-height: none; overflow-y: visible; }
+}
+
 /* ---- the light theme, chosen from the account menu ---- */
 :root[data-theme="light"] {
   --bg: #eef0f3; --panel: #ffffff; --panel-head: #f6f7f9; --panel-deep: #eceef1; --line: #d5d9de; --input: #e9ecef; --input-hover: #dde1e5;

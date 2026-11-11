@@ -5,8 +5,11 @@ import unittest
 from pathlib import Path
 
 from captainguild.core.tagscript import MAX_BLOCKS, MAX_COMMANDS, MAX_REACTIONS, MAX_SECONDS, MAX_VALUE, MAX_WORK, TEMPLATE_MAX, Interpreter, Scope, render_text
+from captainguild.core.invitewatch import Invite
+from captainguild.core.tagscript import objects
 from captainguild.core.tagscript.blocks import BLOCKS
 from captainguild.core.tagscript.mathexpr import MAX_DEPTH, MAX_INT_BITS, MAX_LENGTH
+from captainguild.core.tagscript.numerals import FORMATS
 from captainguild.core.tagscript.objects import _CHANNEL, _PERSON
 from tests.fakes import FakeChannel, FakeGuild, FakeMember
 
@@ -32,6 +35,7 @@ def scope() -> Scope:
     ada.id = 111111111111111111
     ada.mention = f"<@{ada.id}>"
     ada.nick = "Ada"
+    ada.global_name = "Ada Lovelace"
     grace = FakeMember(guild, "grace")
     grace.id = 555555555555555555
     grace.mention = f"<@{grace.id}>"
@@ -44,9 +48,13 @@ def scope() -> Scope:
     channel.slowmode_delay = 30
     for name in ("one", "two", "three"):
         FakeChannel(guild, name)
+    invite = Invite(
+        code="harbor", uses=12, max_uses=50, max_age=5356800, channel_id=channel.id, created_at=datetime.datetime(2025, 12, 1, tzinfo=UTC),
+        expires_at=datetime.datetime(2026, 2, 1, tzinfo=UTC), inviter_id=grace.id, inviter_name="Grace", inviter_username="grace", inviter_global_name="Grace",
+    )
     return Scope(
         guild=guild, member=ada, channel=channel, target=grace, args="one two three", uses=42, role=crew, role_added=True,
-        now=datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC).timestamp(),
+        now=datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC).timestamp(), extra={"joined": "8102", "invite": objects.invite(invite)},
     )
 
 
@@ -143,8 +151,17 @@ class ReferenceTest(unittest.TestCase):
 
     def test_every_property_is_in_the_reference(self):
         documented = {span for _, rows in tables(self.text) for row in rows for span in _SPAN.findall(row[0])}
-        for name in (*_PERSON, *_CHANNEL, "owner", "random", "randomonline", "randomoffline", "members", "bots", "humans", "roles", "channels", "is_added", "has_elevated_perms"):
+        for name in (*_PERSON, *_CHANNEL, "owner", "random", "randomonline", "randomoffline", "members", "bots", "humans", "roles", "channels", "is_added", "has_elevated_perms",
+                     *objects.server(self.scope.guild).properties, *objects.invite(None).properties):
             self.assertIn(f"({name})", documented, name)
+
+    def test_every_number_format_is_in_the_reference(self):
+        rows = [row for header, rows in tables(self.text) if header and header[0] == "Format" for row in rows]
+        self.assertEqual([_SPAN.findall(row[0])[0] for row in rows], list(FORMATS))
+
+    def test_the_greeting_values_are_in_the_reference(self):
+        documented = {span for header, rows in tables(self.text) if header and header[0] == "Block" for row in rows for span in _SPAN.findall(row[0])}
+        self.assertLessEqual({"{joined}", "{invite}"}, documented)
 
     def test_the_limits_match_the_code(self):
         rows = {row[0]: row[1] for header, rows in tables(self.text) if header == ["What", "Limit"] for row in rows}

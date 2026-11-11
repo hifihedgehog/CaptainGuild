@@ -13,8 +13,10 @@ import functools
 import io
 import math
 import os
+import threading
+from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, NamedTuple, Sequence
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
@@ -104,6 +106,8 @@ def can_draw(character: str, bold: bool = False) -> bool:
 _JOINERS = frozenset("\u200d\ufe0f\u20e3")  # zero-width joiner, emoji presentation, keycap
 EMOJI_HEIGHT = 1.08  # an emoji's height beside text, in multiples of the text's size
 EMOJI_SPACE = 0.08  # the room on each side of an emoji, in multiples of the text's size
+EMOJI_KEPT = 4096  # emoji pictures kept between draws
+EMOJI_KEPT_BYTES = 24 * 1024 * 1024  # and what they may weigh together. Names are drawn at every join, and each new emoji in one is a new picture.
 
 
 def _joins(character: str) -> bool:
@@ -134,8 +138,54 @@ def _emoji_like(cluster: str, bold: bool = False) -> bool:
     return (len(cluster) > 1 and (any(_joins(character) for character in cluster) or _regional(cluster[0]))) or not can_draw(cluster[0], bold)
 
 
-@functools.lru_cache(maxsize=4096)
-def emoji_picture(cluster: str) -> Image.Image | None:
+class _Kept(NamedTuple):
+    currsize: int
+    maxsize: int
+    weight: int
+
+
+class _Pictures:
+    """Pictures already drawn, by cluster, the least recently used dropped first once there are more than `entries` or they weigh more than
+    `weight` bytes. Worker threads share it. Every picture is cut from one sheet of 420x180, so the weight bounds the memory whatever the
+    clusters are."""
+
+    def __init__(self, drawn: Callable[[str], Image.Image | None], *, entries: int, weight: int) -> None:
+        self.drawn = drawn
+        self.entries = entries
+        self.weight = weight
+        self.items: OrderedDict[str, tuple[Image.Image | None, int]] = OrderedDict()
+        self.held = 0
+        self.lock = threading.Lock()
+
+    def __call__(self, cluster: str) -> Image.Image | None:
+        with self.lock:
+            found = self.items.get(cluster)
+            if found is not None:
+                self.items.move_to_end(cluster)
+                return found[0]
+        picture = self.drawn(cluster)
+        size = picture.width * picture.height * len(picture.getbands()) if picture is not None else 64
+        with self.lock:
+            old = self.items.pop(cluster, None)
+            if old is not None:
+                self.held -= old[1]
+            self.items[cluster] = (picture, size)
+            self.held += size
+            while self.items and (len(self.items) > self.entries or self.held > self.weight):
+                _, (_, dropped) = self.items.popitem(last=False)
+                self.held -= dropped
+        return picture
+
+    def cache_clear(self) -> None:
+        with self.lock:
+            self.items.clear()
+            self.held = 0
+
+    def cache_info(self) -> _Kept:
+        return _Kept(len(self.items), self.entries, self.held)
+
+
+def _drawn_emoji(cluster: str) -> Image.Image | None:
     """The cluster in color, cut to its ink, from the color emoji font. None without the font, or when the font has nothing for it."""
     face = _emoji_font()
     if face is None:
@@ -152,6 +202,9 @@ def emoji_picture(cluster: str) -> Image.Image | None:
     if not any(r != g or g != b for r, g, b, a in picture.getdata() if a > 128):
         return None  # only gray ink: the font's empty box, or no emoji at all
     return picture
+
+
+emoji_picture = _Pictures(_drawn_emoji, entries=EMOJI_KEPT, weight=EMOJI_KEPT_BYTES)
 
 
 def runs(text: str, bold: bool = False) -> list[tuple[str, str]]:

@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/discord.py-2.7.1-5865f2" alt="discord.py 2.7.1">
 </p>
 
-Captain Guild is a self-hosted Discord bot with a web dashboard. It does the work of Carl-bot, Premium features included, along with StatBot, Coffee Bot, GiselleBot's logging, MEE6's levels, Zira, Highlight, RoleLogic and ServerStats, in one process on your own machine. Every feature is there for every server, with no premium tier, and the data sits in encrypted databases you hold.
+Captain Guild is a self-hosted Discord bot with a web dashboard. It does the work of Carl-bot, Premium features included, along with StatBot, Welcomer, Coffee Bot, GiselleBot's logging, MEE6's levels, Zira, Highlight, RoleLogic and ServerStats, in one process on your own machine. Every feature is there for every server, with no premium tier, and the data sits in encrypted databases you hold.
 
 ## What it replaces
 
@@ -19,6 +19,7 @@ Each of these is a separate hosted bot, and several keep features for paying ser
 |---|---|
 | Carl-bot, with Premium | Its moderation, automod, logging, reaction roles, tags and triggers, embeds, starboard, greetings, suggestions and feeds, plus what it keeps for Premium: levels, the bot's own picture, banner and bio in each server, auto purge, the automod drama channel, temporary reaction roles, lockdowns, farewell and birthday channels, starboard auto-star and a custom star emoji, and tags that run up to five commands and add up to five reactions. Twitch and YouTube alerts follow up to 200 channels each. |
 | StatBot, with its premium upgrades | Messages, voice time, members, statuses, games, emoji and invites, counted by the quarter hour. Cards and charts in Discord, a dashboard with heatmaps, member and channel drilldowns and CSV downloads, counter channels, stat roles, recounts of history from before the bot joined, merged channels and a statistics API. |
+| Welcomer, with Pro and Custom Backgrounds | Welcome messages, join DMs, leave messages and welcome images, plus what it keeps for paying servers: uploaded and animated backgrounds, welcome and leave messages that delete themselves after a set time or when the member leaves, and a count of everyone who has ever joined. The image comes from seven layouts or a layer designer, with a live preview of both. An Import button turns a message written with its double-brace tags into Captain Guild's own. |
 | Coffee Bot | Reports of messages and members from the right-click menu, with the evidence, the person's history and a review thread for staff. |
 | GiselleBot's logging | Message, member, role, channel and voice logs, and a mod log of every case, warnings included, each in the channel you pick. |
 | MEE6's levels | XP for messages and voice, rank cards with custom backgrounds, role rewards and leaderboards. `/level mee6import` brings a server's MEE6 levels across. |
@@ -44,6 +45,8 @@ Each of these is a separate hosted bot, and several keep features for paying ser
 | Voice | Temporary mutes and deafens, voice access requests with requirements, a trusted tier for short mutes with an optional vote, and roles held while in a channel. |
 | Suggestions and proposals | Members suggest and vote, and staff decide. A bigger change goes to two votes on one post, one by members and one by moderators, with a discussion thread, and it passes only if both pass. |
 | Community | Welcome and goodbye messages, birthdays, XP levels with rank cards and reward roles, starboard, sticky messages, highlights, reminders, giveaways and polls. |
+| Welcome posts | A welcome message, a join DM, and leave and ban messages, each with its own switch. A welcome can ping the roles it names, wait for Discord's rules screen, skip a quick rejoin, and delete itself after a set time or when the member leaves. Messages show the invite a member came through, a count of everyone who has ever joined, and numbers in five formats. |
+| Welcome images | A picture for each newcomer with their avatar and your text, in the welcome and the join DM. Seven ready-made layouts, 49 drawn backgrounds, solid colors, stripes and uploaded pictures, animated GIFs included, and 13 fonts. A designer arranges layers of text, pictures, avatars and shapes, and a live preview shows the real result. |
 | Alerts | Twitch streams, YouTube videos, free games, game deals, and scheduled feeds with role mentions. |
 | Translation and conversions | `/translate`, a Translate menu, flag reactions and messages that start with "translate" translate between 36 languages with DeepL. Currencies and units convert by command or when a message asks, as in "20 bucks in euros". `/export_emojis` downloads the server's emojis. |
 | Bookmarks | Members right-click a message and get a copy of it in their DMs, with a button that deletes it. |

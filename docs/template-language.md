@@ -40,12 +40,14 @@ Every example in this reference runs against these values, and an automated test
 
 | Value | In the examples |
 |---|---|
-| The person | Display name `Ada`, username `ada`, ID `111111111111111111`, joined 2025-06-07 08:09:10, account made 2020-02-03 04:05:06 |
+| The person | Display name `Ada`, username `ada`, global name `Ada Lovelace`, ID `111111111111111111`, joined 2025-06-07 08:09:10, account made 2020-02-03 04:05:06 |
 | Their roles | `Crew`, position 2, ID `222222222222222222`, color `#5989ab`, plus `@everyone` with the server's ID |
 | The target | `Grace`, username `grace`, ID `555555555555555555`, mentioned in the message |
 | The server | `Harbor`, ID `333333333333333333`, created 2019-01-01 00:00:00, owned by `owner`, with four members and one bot |
 | The channel | `general`, ID `444444444444444444`, topic `Say hello`, slowmode 30, position 3 |
 | The role, in role triggers | `Crew`, just added |
+| The joined count, in greetings | 8102 |
+| The invite, in greetings | Code `harbor`, made by `Grace` (username `grace`) on 2025-12-01 00:00:00 for the channel above, used 12 times of 50, ending 2026-02-01 00:00:00 |
 | The text after the name | `one two three` |
 | The tag's use count | 42 |
 | The time | 2026-01-02 03:04:05 UTC |
@@ -114,6 +116,21 @@ Any variable holding text can be read a piece at a time, with a position in pare
 | `(color)` | The color of their highest colored role. `#000000` when they have none. | `{user(color)}` | `#5989ab` |
 | `(roleids)` | The IDs of their roles, lowest first, with spaces between. | `{user(roleids)}` | `333333333333333333 222222222222222222` |
 | `(position)` | How high their top role sits. `@everyone` is 0. | `{user(position)}` | `2` |
+| `(username)` | The username, the same as `(name)`. | `{user(username)}` | `ada` |
+| `(global_name)` | The name they show across Discord. Nothing when they set none. | `{user(global_name)}` | `Ada Lovelace` |
+| `(profile_name)` | The name on their own profile: the global name, or the username when they set none. A server nickname doesn't change it. | `{user(profile_name)}` | `Ada Lovelace` |
+| `(profile_avatar)` | A link to the avatar on their own profile. A server avatar doesn't change it. | `{user(profile_avatar)}` | `https://cdn.example/avatar.png` |
+| `(discriminator)` | The old four-digit tag. `0` for an account without one. | `{user(discriminator)}` | `0` |
+| `(bot)` | `true` for a bot, `false` for a person. | `{user(bot)}` | `false` |
+| `(pending)` | `true` until they pass the server's rules screen, then `false`. | `{user(pending)}` | `false` |
+| `(created_ago)` | When the account was made, as a Discord timestamp. Discord shows it as "5 years ago" and keeps it current. | `{user(created_ago)}` | `<t:1580702706:R>` |
+| `(joined_ago)` | When they joined this server, the same way. | `{user(joined_ago)}` | `<t:1749283750:R>` |
+
+`(bot)` and `(pending)` are made for conditions, so one message can greet bots and people differently.
+
+| Example | Result |
+|---|---|
+| `{if({user(bot)}==true):A bot joined.\|Welcome, {user}!}` | `Welcome, Ada!` |
 
 ## The server
 
@@ -123,6 +140,8 @@ Any variable holding text can be read a piece at a time, with a position in pare
 | `(id)` | The ID. | `{server(id)}` | `333333333333333333` |
 | `(name)` | The name. | `{server(name)}` | `Harbor` |
 | `(icon)` | A link to the icon, or nothing when there's none. | `[{server(icon)}]` | `[]` |
+| `(splash)` | A link to the invite splash picture, or nothing when there's none. | `[{server(splash)}]` | `[]` |
+| `(banner)` | A link to the banner, or nothing when there's none. | `[{server(banner)}]` | `[]` |
 | `(owner)` | The owner's username. | `{server(owner)}` | `owner` |
 | `(members)` | How many members it has. | `{server(members)}` | `4` |
 | `(bots)` | How many of them are bots. | `{server(bots)}` | `1` |
@@ -157,6 +176,37 @@ Any variable holding text can be read a piece at a time, with a position in pare
 | `(position)` | How high it sits. | `{role(position)}` | `2` |
 | `(is_added)` | `true` if it was added, `false` if it was removed. | `{role(is_added)}` | `true` |
 | `(has_elevated_perms)` | `true` if it can moderate or manage the server. | `{role(has_elevated_perms)}` | `false` |
+
+## Greetings
+
+The welcome, goodbye and ban messages, the join DM and the welcome image read two more values.
+
+`{joined}` counts everyone who has ever joined the server. It goes up by one with each join and never comes down when someone leaves, so it suits "you are our 8,102nd member". A welcome shows the count as it stood when that member joined. The Greetings page shows the count and lets you set it.
+
+| Block | What it gives | Example | Result |
+|---|---|---|---|
+| `{joined}` | How many people have joined so far. | `{joined}` | `8102` |
+
+`{invite}` is the invite the member joined through, in the welcome message, the join DM and the welcome image. The bot needs Manage Server to read invites. When it can't tell which invite was used, the code and the inviter read `Unknown`, the numbers read `0` and the dates give nothing. A goodbye or a ban message reads it that way too. A server's vanity link counts as an invite with no inviter.
+
+| Block | What it gives | Example | Result |
+|---|---|---|---|
+| `{invite}` | The invite's code. | `{invite}` | `harbor` |
+| `(code)` | The code. | `{invite(code)}` | `harbor` |
+| `(uses)` | How many times it has been used, this join included. | `{invite(uses)}` | `12` |
+| `(max_uses)` | How many uses it allows. `0` means no limit. | `{invite(max_uses)}` | `50` |
+| `(max_age)` | How long it lasts, in seconds. `0` means it never ends. | `{invite(max_age)}` | `5356800` |
+| `(temporary)` | `true` if it gives temporary membership, otherwise `false`. | `{invite(temporary)}` | `false` |
+| `(channel)` | The channel it leads to, as an ID. | `{invite(channel)}` | `444444444444444444` |
+| `(created_at)` | When it was made. | `{invite(created_at)}` | `2025-12-01 00:00:00` |
+| `(expires_at)` | When it ends, or nothing when it never does. | `{invite(expires_at)}` | `2026-02-01 00:00:00` |
+| `(created_ago)` | When it was made, as a Discord timestamp such as "1 month ago". | `{invite(created_ago)}` | `<t:1764547200:R>` |
+| `(expires_in)` | When it ends, as a Discord timestamp such as "in 30 days". | `{invite(expires_in)}` | `<t:1769904000:R>` |
+| `(inviter)` | The name of whoever made it, as their own profile shows it: the global name, or the username when they set none. | `{invite(inviter)}` | `Grace` |
+| `(inviter_username)` | Their username. | `{invite(inviter_username)}` | `grace` |
+| `(inviter_global_name)` | Their global name. Nothing when they set none. | `{invite(inviter_global_name)}` | `Grace` |
+| `(inviter_mention)` | A mention of whoever made it. It doesn't ping them. | `{invite(inviter_mention)}` | `<@555555555555555555>` |
+| `(inviter_id)` | Their ID, or `0` when there's no inviter. | `{invite(inviter_id)}` | `555555555555555555` |
 
 ## Conditions
 
@@ -203,14 +253,38 @@ In a block with an else, a pipe divides the payload: what's before it comes out 
 | Block | What it gives | Example | Result |
 |---|---|---|---|
 | `{ord:number}` | The number with its ordinal ending. Thousands get commas. Anything else comes back unchanged. | `{ord:8102}` | `8,102nd` |
+| `{ord(format):number}` | The same, with the digits written in one of the number formats below. | `{ord(plain):8102}` | `8102nd` |
+| `{num:number}` | The number with commas between its thousands. Anything that isn't a whole number stays as written. | `{num:1234567}` | `1,234,567` |
+| `{num(format):number}` | The number in one of the number formats below. | `{num(dots):1234567}` | `1.234.567` |
 | `{lower:text}` | The text in lower case. | `{lower:Tall Ship}` | `tall ship` |
 | `{upper:text}` | The text in upper case. | `{upper:tall ship}` | `TALL SHIP` |
+| `{title:text}` | The text with the first letter of each word in upper case. The other letters stay as written. | `{title:tall ship}` | `Tall Ship` |
 | `{join(with):text}` | The text with each space replaced. The parameter can be empty but has to be there. | `{join(_):tall ship}` | `tall_ship` |
 | `{replace(from,to):text}` | The text with every copy of one string replaced by another. An empty first string puts the second around every character. | `{replace(oo,ee):Goose Tooth}` | `Geese Teeth` |
 | `{urlencode:text}` | The text made safe for a link. | `{urlencode:a b, c?}` | `a%20b%2C%20c%3F` |
 | `{urlencode(+):text}` | The same, with plus signs for spaces. | `{urlencode(+):a b, c?}` | `a+b%2C+c%3F` |
 | `{substr(from-to):text}` | The characters from one position up to another, counting from 0. | `{substr(1-3):abcde}` | `bc` |
 | `{substring(from):text}` | The characters from a position to the end. | `{substring(2):abcde}` | `cde` |
+
+### Number formats
+
+`{ord}` and `{num}` take a format in parentheses. With none, both use `commas`.
+
+| Format | How it writes a number | Example | Result |
+|---|---|---|---|
+| `plain` | Digits alone. | `{num(plain):1234567}` | `1234567` |
+| `commas` | A comma between thousands. | `{num(commas):1234567}` | `1,234,567` |
+| `dots` | A period between thousands. | `{num(dots):1234567}` | `1.234.567` |
+| `indian` | The last three digits, then pairs. | `{num(indian):1234567}` | `12,34,567` |
+| `arabic` | Arabic-Indic digits and their separator. | `{num(arabic):1234567}` | `١٬٢٣٤٬٥٦٧` |
+
+A block's result can go straight into another, so a member count reads well in a welcome message.
+
+| Example | Result |
+|---|---|
+| `{ord(plain):{server(members)}}` | `4th` |
+| `{ord(dots):{joined}}` | `8.102nd` |
+| `{num(indian):{joined}}` | `8,102` |
 
 ## Math
 
@@ -268,6 +342,10 @@ All times are UTC. A date is written `yyyy-mm-dd HH:MM:SS`, and periods work in 
 | `{strf(date):format}` | A given time, in a format. | `{strf(1999-12-31 23.59.59):%A}` | `Friday` |
 | `{td:date}` | How far away a date is from now, in calendar terms, largest three units. | `{td:2026-03-01 00:00:00}` | `1 month, 3 weeks and 5 days` |
 | `{td(date):date}` | How far apart two dates are. | `{td(2026-01-01 00:00:00):2026-01-03 12:00:00}` | `2 days and 12 hours` |
+| `{since:date}` | How far away a date is from now, as its one largest unit. | `{since:{user(created_at)}}` | `5 years` |
+| `{since(date):date}` | How far apart two dates are, as one unit. | `{since(2026-01-01 00:00:00):2026-01-03 12:00:00}` | `2 days` |
+
+`{since}` gives plain words that stay as they were when the message went out. Use it on a welcome image, where a Discord timestamp can't be drawn. In a message, `{user(created_ago)}` and `{user(joined_ago)}` give a timestamp Discord keeps current.
 
 The format codes are the ones on Linux, in English, and the same on every server.
 

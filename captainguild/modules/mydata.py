@@ -92,6 +92,7 @@ KEPT = {
     "stat_reports": "who set up a scheduled statistics report, for staff",
     "stat_presets": "the server's saved views, which staff manage", "stat_merged_channels": "which channels a merge moved, whose target is a channel, not a person",
     "stat_auto_merges": "when categories fed a merged channel, whose target is a channel, not a person", "stat_counters": "the server's setup", "stat_roles": "the server's setup",
+    "greeting_posts": "which welcome, leave and ban posts are about someone, so the bot can delete those posts on time, and gone after 30 days",
 }
 
 

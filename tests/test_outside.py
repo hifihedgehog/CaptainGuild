@@ -32,12 +32,16 @@ class OutsideTest(unittest.IsolatedAsyncioTestCase):
         async def form(request: web.Request) -> web.Response:
             return web.json_response(dict(await request.post()))
 
+        async def away(request: web.Request) -> web.Response:
+            return web.Response(status=302, headers={"Location": f"http://localhost:{request.url.port}/secret"})
+
         app = web.Application()
         app.router.add_get("/hello", hello)
         app.router.add_get("/huge", huge)
         app.router.add_get("/bounce", bounce)
         app.router.add_get("/secret", secret)
         app.router.add_post("/form", form)
+        app.router.add_get("/away", away)
         self.server = TestServer(app)
         await self.server.start_server()
         self.base = f"http://127.0.0.1:{self.server.port}"
@@ -113,6 +117,20 @@ class OutsideTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(OutsideError):
                 await self.web.get(allowed, stranger=True, timeout=5.0)
         self.assertEqual(self.hits, [], "the redirect's target was never asked for")
+
+    async def test_a_request_goes_only_to_the_hosts_it_names(self):
+        port = self.server.port
+        with self.assertRaises(OutsideError) as refused:
+            await self.web.get(f"{self.base}/away", hosts=frozenset({"127.0.0.1"}), timeout=5.0)
+        self.assertIn("doesn't fetch from", str(refused.exception))
+        self.assertEqual(self.hits, [], "the redirect to another host was never sent")
+        with self.assertRaises(OutsideError):
+            await self.web.get(f"http://localhost:{port}/hello", hosts=frozenset({"127.0.0.1"}), timeout=5.0)
+        self.assertEqual(self.hits, [], "nor a first request to another host")
+        answer = await self.web.get(f"{self.base}/away", hosts=frozenset({"127.0.0.1", "LOCALHOST"}), timeout=5.0)
+        self.assertEqual((answer.status, self.hits), (200, ["secret"]), "a redirect between the hosts named is followed")
+        answer = await self.web.get(f"{self.base}/away", timeout=5.0)
+        self.assertEqual((answer.status, self.hits), (200, ["secret", "secret"]), "a caller that names no hosts follows redirects as before")
 
     async def test_names_that_point_inside_are_refused_by_the_resolver(self):
         resolver = _PublicResolver()

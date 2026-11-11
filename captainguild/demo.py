@@ -215,7 +215,7 @@ class DemoOps:
             raise MessageGone("That message doesn't exist.")
         return list(stored.get("hidden_embeds", []))
 
-    async def send_dm(self, user_id: int, payload: dict) -> dict:
+    async def send_dm(self, user_id: int, payload: dict, *, files: list[tuple[str, bytes]] | None = None) -> dict:
         return {"id": next(self.ids)}
 
     async def create_channel(self, guild_id: int, name: str, *, read_only: bool = False, private: bool = False, viewer_roles: Iterable[int] = ()) -> dict:

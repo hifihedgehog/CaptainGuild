@@ -12,9 +12,11 @@ from typing import TYPE_CHECKING, Callable
 from urllib.parse import quote, quote_plus
 
 from ..durations import ordinal
+from . import numerals
 from .clock import describe_gap, format_time, from_unix, parse_when
 from .mathexpr import evaluate
-from .text import MAX_COMMANDS, MAX_REACTIONS, MAX_VALUE, LimitReached, carry, map_runs, plain, replace_keeping, split_list
+from .text import (KEEPING, MAX_COMMANDS, MAX_REACTIONS, MAX_VALUE, SHIELDING, LimitReached, carry, is_shielded, map_runs, plain, replace_keeping,
+                   split_list, title_case)
 
 if TYPE_CHECKING:
     from .engine import Interpreter
@@ -164,6 +166,11 @@ def _strf(run: "Interpreter", name: str, parameter: str | None, payload: str | N
         moment = parse_when(plain(parameter))
         if moment is None:
             return None
+    if is_shielded(parameter):
+        # The date came from outside. The result stays data as a whole and reads as it always did, the codes found in the format's plain text.
+        # What each code gives is from outside, and the rest of the format keeps its own marks: the template's text still counts as the
+        # template's, so a mention typed in it is the template's mention, a strf's inside it included, and text from outside stays outside.
+        return format_time(moment, plain(payload), codes=SHIELDING, literal=payload.translate(KEEPING))
     return carry(format_time(moment, plain(payload)), parameter, payload)
 
 
@@ -178,7 +185,8 @@ def _timedelta(run: "Interpreter", name: str, parameter: str | None, payload: st
         moment = parse_when(plain(parameter))
         if moment is None:
             return None
-    return describe_gap(moment, other)
+    # since names one unit, for words that go where a Discord timestamp can't be drawn, such as a picture.
+    return describe_gap(moment, other, 1 if name == "since" else 3)
 
 
 def _list(run: "Interpreter", name: str, parameter: str | None, payload: str | None) -> str | None:
@@ -222,13 +230,43 @@ def _contains(run: "Interpreter", name: str, parameter: str | None, payload: str
     return "true" if plain(parameter) in plain(payload).split() else "false"
 
 
+def _whole_number(payload: str) -> int | None:
+    """The number ord and num read: digits, with a sign and the .0 the math block leaves. None for anything else."""
+    text = plain(payload).strip()
+    if len(text) > 40 or not _NUMBER_WORD.fullmatch(text):
+        return None
+    return int(text.split(".")[0])
+
+
+def _number_format(parameter: str | None) -> str | None:
+    """The format a parameter names, or None when it names none."""
+    if parameter is None:
+        return None
+    style = plain(parameter).strip().lower()
+    return style if style in numerals.FORMATS else None
+
+
 def _ord(run: "Interpreter", name: str, parameter: str | None, payload: str | None) -> str | None:
     if payload is None:
         return None
-    text = plain(payload).strip()
-    if len(text) > 40 or not _NUMBER_WORD.fullmatch(text):
+    number = _whole_number(payload)
+    if number is None:
         return payload
-    return carry(ordinal(int(text.split(".")[0])), payload)
+    style = _number_format(parameter)
+    if style is None:
+        return carry(ordinal(number), payload)
+    return carry(numerals.ordinal(number, style), parameter, payload)
+
+
+def _num(run: "Interpreter", name: str, parameter: str | None, payload: str | None) -> str | None:
+    # A tag written before this block existed may hold a variable called num, so anything that isn't a number in a known format is left for the variable.
+    style = _number_format(parameter)
+    if payload is None or (parameter is not None and style is None):
+        return None
+    number = _whole_number(payload)
+    if number is None:
+        return None
+    return carry(numerals.grouped(number, style or numerals.DEFAULT), parameter, payload)
 
 
 def _lower(run: "Interpreter", name: str, parameter: str | None, payload: str | None) -> str | None:
@@ -237,6 +275,11 @@ def _lower(run: "Interpreter", name: str, parameter: str | None, payload: str | 
 
 def _upper(run: "Interpreter", name: str, parameter: str | None, payload: str | None) -> str | None:
     return None if payload is None else map_runs(payload, str.upper)
+
+
+def _title(run: "Interpreter", name: str, parameter: str | None, payload: str | None) -> str | None:
+    # With a parameter this is a variable called title read a piece at a time, which older tags may do.
+    return None if payload is None or parameter is not None else title_case(payload)
 
 
 def _replaced(text: str, before: str, after: str) -> str:
@@ -368,15 +411,17 @@ BLOCKS: dict[str, Block] = {
     "range": _range, "rangef": _range,
     "5050": _fifty, "50": _fifty, "?": _fifty,
     "strf": _strf,
-    "td": _timedelta,
+    "td": _timedelta, "since": _timedelta,
     "list": _list,
     "cycle": _cycle,
     "index": _index,
     "in": _in,
     "contains": _contains,
     "ord": _ord,
+    "num": _num,
     "lower": _lower,
     "upper": _upper,
+    "title": _title,
     "join": _join,
     "replace": _replace,
     "urlencode": _urlencode,
@@ -391,3 +436,6 @@ BLOCKS: dict[str, Block] = {
     "embed": _embed,
     "command": _command, "cmd": _command, "c": _command, "cmdadmin": _command,
 }
+# Blocks newer than templates that may already hold a variable of the same name, set by the template or given by the feature. Where there is
+# such a variable, it wins in every form, as it did before the block existed.
+GIVES_WAY = frozenset({"title", "num", "since"})

@@ -7,6 +7,7 @@ import ipaddress
 import json
 import logging
 import struct
+import sys
 import tempfile
 import time
 import unittest
@@ -26,6 +27,7 @@ from captainguild.core.logsink import LogSink
 from captainguild.core.outside import OutsideError, _is_public, check_public_link
 from captainguild.core.perms import COMMAND_SCHEMA, SETTINGS_SCHEMA
 from captainguild.core.settings import Settings
+from captainguild.core.tagscript import budget
 from captainguild.core.timers import Timers
 from captainguild.core.validate import Field, Invalid, Schema, boolean, snowflakes
 from captainguild.db import Database, DatabaseKeyError
@@ -267,6 +269,94 @@ class TimerWakeTest(TimerCase):
             await asyncio.wait_for(ran.wait(), 10)
 
 
+class TimerBatchTest(TimerCase):
+    async def counted_pass(self) -> list[str]:
+        reads = []
+        real_one, real_all = self.db.one, self.db.all
+
+        async def one(sql, args=()):
+            reads.append(sql)
+            return await real_one(sql, args)
+
+        async def every(sql, args=()):
+            reads.append(sql)
+            return await real_all(sql, args)
+
+        with mock.patch.object(self.db, "one", one), mock.patch.object(self.db, "all", every):
+            await self.timers.run_due()
+        return reads
+
+    async def test_rows_a_handler_moved_are_passed_over_after_one_read_of_the_rest(self):
+        # The first row's handler moves every other row of its kind, as greetings puts off the deletes Discord keeps waiting, and cancels one. The
+        # pass reads the second row, finds it moved, reads the rest of the batch in one query, and runs the other kind's row, still due, from that read.
+        ran = []
+
+        async def mover(payload, row):
+            ran.append(payload["n"])
+            await self.db.run("UPDATE timers SET due_at = due_at + 600 WHERE kind = 'move' AND id != ?", (row["id"],))
+            await self.db.run("DELETE FROM timers WHERE payload = ?", ('{"n": 10}',))
+
+        async def other(payload, row):
+            ran.append("other")
+
+        self.timers.handler("move", mover)
+        self.timers.handler("other", other)
+        for number in range(50):
+            await self.timers.schedule("move", time.time() - 100 + number, {"n": number})
+        await self.timers.schedule("other", time.time() - 1)
+        reads = await self.counted_pass()
+        self.assertEqual(ran, [0, "other"])
+        self.assertEqual(len(reads), 4, "the batch, the first row, the second row, and the rest in one query")
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM timers"), 48)
+
+    async def test_a_row_read_with_the_rest_is_read_again_once_anything_was_awaited(self):
+        # The second row moved, so the rest were read in one query. The third runs from that read and cancels the fourth, which is read again
+        # before its turn and doesn't run. The fifth still does.
+        ran, ids = [], {}
+
+        async def work(payload, row):
+            ran.append(payload["n"])
+            if payload["n"] == 0:
+                await self.db.run("UPDATE timers SET due_at = due_at + 600 WHERE id = ?", (ids[1],))
+            if payload["n"] == 2:
+                await self.timers.cancel(ids[3])
+
+        self.timers.handler("work", work)
+        for number in range(5):
+            ids[number] = await self.timers.schedule("work", time.time() - 100 + number, {"n": number})
+        reads = await self.counted_pass()
+        self.assertEqual(ran, [0, 2, 4])
+        self.assertEqual(len(reads), 6, "the batch, rows 0 and 1, the rest, row 3, and the rest again")
+        self.assertEqual(await self.db.scalar("SELECT COUNT(*) FROM timers"), 1, "the moved row stays")
+
+    async def test_a_held_server_s_row_read_with_the_rest_waits_and_runs_once_released(self):
+        # A row read with the rest is still checked against the servers on hold at its own turn, as before.
+        ran, ids = [], {}
+
+        async def work(payload, row):
+            ran.append(payload["n"])
+            if payload["n"] == 0:
+                await self.db.run("UPDATE timers SET due_at = due_at + 600 WHERE id = ?", (ids[1],))
+
+        self.timers.handler("work", work)
+        for number in range(3):
+            ids[number] = await self.timers.schedule("work", time.time() - 100 + number, {"n": number}, guild_id=7 if number == 2 else None)
+        real_one = self.db.one
+
+        async def hold_on_read(sql, args=()):
+            row = await real_one(sql, args)
+            if args == (ids[1],):
+                self.timers.hold(7)
+            return row
+
+        with mock.patch.object(self.db, "one", hold_on_read):
+            await self.timers.run_due()
+        self.assertEqual(ran, [0])
+        self.timers.release(7)
+        await self.timers.run_due()
+        self.assertEqual(ran, [0, 2])
+
+
 class LeftServerTimerTest(TimerCase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
@@ -320,6 +410,24 @@ class LeftServerTimerTest(TimerCase):
         self.here = True
         await self.timers.run_due()
         self.assertEqual(self.ran, [5])
+
+
+class SwitchIntervalTest(unittest.TestCase):
+    def test_the_program_passes_the_interpreter_s_lock_around_every_millisecond(self):
+        # Template work runs in threads, and the event loop wins the interpreter's lock back after each of its system calls only when the
+        # running thread lets go, which it does after this long once another thread waits.
+        self.addCleanup(sys.setswitchinterval, sys.getswitchinterval())
+        started = []
+
+        def run(coroutine):
+            started.append(sys.getswitchinterval())
+            coroutine.close()
+
+        with mock.patch.object(sys, "argv", ["captainguild", "--demo"]), mock.patch.object(program, "logging"), mock.patch.object(program, "servers"), \
+                mock.patch.object(program, "load_dotenv"), mock.patch.object(program.os, "umask"), mock.patch.object(program.asyncio, "run", run):
+            program.main()
+        self.assertEqual(budget.SWITCH_SECONDS, 0.001)
+        self.assertEqual(started, [budget.SWITCH_SECONDS])
 
 
 class BotLeftServerTest(BotTest):

@@ -109,6 +109,22 @@ GUIDE = """
 <tr><td>Autoroles</td><td>Skip bots</td><td>Bots that join get no autoroles or timed roles.</td></tr>
 <tr><td>Greetings</td><td>Announcement Time</td><td>The hour birthdays go out. The whole server shares one time.</td></tr>
 <tr><td>Greetings</td><td>Joins in a minute before welcomes pause</td><td>Past this many, the bot skips each welcome and join DM, and posts one line with the count once joins go quiet. 0 welcomes everyone.</td></tr>
+<tr><td>Greetings</td><td>Post the welcome message</td><td>Off keeps the message and posts nothing. The leave message, the ban message and the join DM each have the same switch.</td></tr>
+<tr><td>Greetings</td><td>Wait until they accept the rules</td><td>With Discord's rules screen on, the welcome and the join DM go out when the member accepts the rules.</td></tr>
+<tr><td>Greetings</td><td>Who the welcome pings</td><td>The member alone, or also the roles the message names, or also @everyone and @here when the message has them. Picking roles or everyone takes your own right to ping in that channel.</td></tr>
+<tr><td>Greetings</td><td>Who the leave message pings</td><td>The same three choices as the welcome, for the leave message. The ban message has its own.</td></tr>
+<tr><td>Greetings</td><td>Welcome bots too</td><td>Off, a bot that joins gets no welcome.</td></tr>
+<tr><td>Greetings</td><td>Delete each welcome after</td><td>Removes each welcome that long after it went out, up to 30 days. Leave and ban messages have their own. 0 keeps them.</td></tr>
+<tr><td>Greetings</td><td>Delete a member's welcome when they leave</td><td>Their welcome goes when they leave, are kicked or are banned.</td></tr>
+<tr><td>Greetings</td><td>Minutes before a rejoin is welcomed again</td><td>Someone who leaves and comes back inside this time gets no second welcome or join DM. 0 welcomes every join.</td></tr>
+<tr><td>Greetings</td><td>Send the welcome message as the DM</td><td>The join DM sends the welcome message in place of its own.</td></tr>
+<tr><td>Greetings</td><td>People who have joined so far</td><td>A count of every join, which goes up when members leave too. <code>{joined}</code> shows it in a message or on the picture, and you can set it.</td></tr>
+<tr><td>Welcome image</td><td>Send the picture with each welcome message</td><td>Draws a picture for each newcomer with their avatar and your text, and posts it with the welcome.</td></tr>
+<tr><td>Welcome image</td><td>Show it inside the message's embed</td><td>On, the picture sits in the welcome's first embed. Off, it is a plain attachment beside the text.</td></tr>
+<tr><td>Welcome image</td><td>Send it with the join DM too</td><td>The same picture goes in the join DM.</td></tr>
+<tr><td>Welcome image</td><td>Keep an animated background moving</td><td>With an animated GIF as the background, the picture goes out as a GIF. Off draws its first frame.</td></tr>
+<tr><td>Welcome image</td><td>Text position</td><td>Where the text sits in its space. Automatic follows the layout.</td></tr>
+<tr><td>Welcome image</td><td>Put a frame around the picture</td><td>A frame in the color and width you pick, which grows the picture on every side.</td></tr>
 <tr><td>Levels</td><td>Panel opacity</td><td>How solid the dark panel on a rank card is, from clear to solid.</td></tr>
 <tr><td>Logging</td><td>Moderator delete log channel</td><td>Deletes where the audit log names a moderator or bot, and purges. Empty keeps them in the message log channel.</td></tr>
 <tr><td>Logging</td><td>Role log channel</td><td>Members' role changes. Empty keeps them in the member log channel.</td></tr>

@@ -51,6 +51,7 @@ export const NAV = [
   ] },
   { title: 'Utility', items: [
     { key: 'greetings', name: 'Greetings', icon: 'door-open' },
+    { key: 'welcomecard', name: 'Welcome image', icon: 'layers-3' },
     { key: 'starboard', name: 'Starboard', icon: 'star' },
     { key: 'embeds', name: 'Embeds', icon: 'image' },
     { key: 'collaborative', name: 'Collaborative messages', icon: 'users' },

@@ -123,26 +123,33 @@ class Outside:
             self._plain = aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar())
         return self._plain
 
-    async def get(self, url: str, *, params: Any = None, headers: dict | None = None, max_bytes: int = DEFAULT_MAX_BYTES, timeout: float = DEFAULT_TIMEOUT, stranger: bool = False) -> Reply:
-        """`stranger` is for a link a member supplied. It only reaches public addresses, and each redirect is checked again."""
-        return await self._request("GET", url, params=params, headers=headers, max_bytes=max_bytes, timeout=timeout, stranger=stranger)
+    async def get(self, url: str, *, params: Any = None, headers: dict | None = None, max_bytes: int = DEFAULT_MAX_BYTES, timeout: float = DEFAULT_TIMEOUT, stranger: bool = False,
+                  hosts: frozenset[str] | None = None) -> Reply:
+        """`stranger` is for a link a member supplied. It only reaches public addresses, and each redirect is checked again. `hosts`, when
+        given, names the only hosts a request may go to: the first and every redirect are checked before they are sent."""
+        return await self._request("GET", url, params=params, headers=headers, max_bytes=max_bytes, timeout=timeout, stranger=stranger, hosts=hosts)
 
     async def post(self, url: str, *, data: Any = None, headers: dict | None = None, max_bytes: int = DEFAULT_MAX_BYTES, timeout: float = DEFAULT_TIMEOUT) -> Reply:
         return await self._request("POST", url, data=data, headers=headers, max_bytes=max_bytes, timeout=timeout)
 
-    async def _request(self, method: str, url: str, *, params: Any = None, data: Any = None, headers: dict | None = None, max_bytes: int, timeout: float, stranger: bool = False) -> Reply:
+    async def _request(self, method: str, url: str, *, params: Any = None, data: Any = None, headers: dict | None = None, max_bytes: int, timeout: float, stranger: bool = False,
+                       hosts: frozenset[str] | None = None) -> Reply:
         if self.offline:
             raise OutsideError("This copy of the bot doesn't call outside services.")
         sent = {"User-Agent": USER_AGENT, **(headers or {})}
         limit = aiohttp.ClientTimeout(total=timeout)
         session = self._session(stranger)
+        by_hand = stranger or hosts is not None  # redirects followed here, one at a time, so each is checked before it is sent
+        allowed = frozenset(host.lower() for host in hosts) if hosts is not None else None
         try:
             for _ in range(MAX_REDIRECTS + 1):
                 if stranger:
                     check_public_link(url)
-                async with session.request(method, url, params=params, data=data, headers=sent, timeout=limit, allow_redirects=not stranger) as response:
+                if allowed is not None and (urlsplit(url).hostname or "") not in allowed:
+                    raise OutsideError("That link leads to a site the bot doesn't fetch from.")
+                async with session.request(method, url, params=params, data=data, headers=sent, timeout=limit, allow_redirects=not by_hand) as response:
                     location = response.headers.get("Location")
-                    if stranger and response.status in REDIRECTS and location:
+                    if by_hand and response.status in REDIRECTS and location:
                         url = urljoin(str(response.url), location)
                         params = None
                         continue

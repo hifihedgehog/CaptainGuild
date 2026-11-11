@@ -160,14 +160,15 @@ def _apply_embed_blocks(payload: dict, changes: list[tuple[str, str]], now: floa
             embed.pop(key, None)
 
 
-def _render_all(payload: Any, render: Callable[[str], str]) -> dict:
-    """Text first, so the embed can read its variables, then each embed's parts in the order the page shows them, then the buttons. Whatever shape a stored message has, this reads what it can."""
+def _render_all(payload: Any, render: Callable[[str], str], *, content: Callable[[str], str] | None = None) -> dict:
+    """Text first, so the embed can read its variables, then each embed's parts in the order the page shows them, then the buttons. Whatever shape a stored message has, this reads what it can.
+    `content` renders the message text in place of `render`, for a caller that needs more from it than the text."""
     source = payload if isinstance(payload, dict) else {}
 
-    def fill(value: Any) -> Any:
-        return render(value) if isinstance(value, str) and value else value
+    def fill(value: Any, using: Callable[[str], str] = render) -> Any:
+        return using(value) if isinstance(value, str) and value else value
 
-    out: dict[str, Any] = {"content": fill(source.get("content") or ""), "embeds": [], "buttons": []}
+    out: dict[str, Any] = {"content": fill(source.get("content") or "", content or render), "embeds": [], "buttons": []}
     embeds = source.get("embeds")
     for embed in embeds if isinstance(embeds, list) else []:
         if not isinstance(embed, dict):
@@ -207,16 +208,46 @@ def render_text(text: str, scope: Scope) -> str:
         return text
 
 
-def render_payload(payload: dict, scope: Scope) -> dict:
-    """Fill in a whole message and cut it to fit Discord. Never raises."""
+def written_content(payload: Any) -> str:
+    """A stored message's text as it goes out when no block runs, which is all the template's own."""
+    content = payload.get("content") if isinstance(payload, dict) else None
+    return content if isinstance(content, str) else ""
+
+
+def as_written(payload: Any, marks: dict) -> None:
+    """Note in `marks` that the message text goes out as written. When it holds a block, none of its blocks ran and no branch of it was
+    taken, which marks["kept"] says."""
+    marks["content"] = written_content(payload)
+    marks["kept"] = "{" in marks["content"]
+
+
+def render_payload(payload: dict, scope: Scope, *, marks: dict | None = None) -> dict:
+    """Fill in a whole message and cut it to fit Discord. Never raises.
+
+    With `marks`, marks["content"] is the message text as it came out, before it was cut to fit, with every character that came from outside the
+    template still marked (text.py), so a caller can tell which mentions the template itself wrote. It lines up with the text character for character.
+    marks["kept"] is true when the text went out as written although it holds a block, so that none of its branches was taken."""
+    if marks is not None:
+        as_written(payload, marks)
     try:
         run = Interpreter(scope)
-        out = _render_all(payload, run.render_or_keep)
+        out = _render_all(payload, run.render_or_keep, content=_marking(run, marks) if marks is not None else None)
         _apply_embed_blocks(out, run.actions.embed, run.now)
         return fit_payload(out)
     except Exception:
         log.exception("A message template failed")
+        if marks is not None:
+            as_written(payload, marks)
         return fit_payload(payload)
+
+
+def _marking(run: Interpreter, marks: dict) -> Callable[[str], str]:
+    def content(text: str) -> str:
+        shown, marked = run.render_or_keep_marked(text)
+        marks["content"] = marked
+        marks["kept"] = "{" in text and run.exhausted  # past the engine's limits it went out as written
+        return shown
+    return content
 
 
 def render_strict(payload: dict, scope: Scope) -> tuple[dict, Actions, Interpreter]:
