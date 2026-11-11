@@ -471,7 +471,9 @@ class PictureForTest(Case):
             release.set()
             results = await asyncio.gather(*full, first, return_exceptions=True)
         self.assertIsInstance(results[-1], render.Picture, f"the third server's first preview was turned away: {results[-1]!r}")
-        self.assertEqual(order[:2], [1, 3], "the server holding the fewest places is drawn next, ahead of the two that filled the line")
+        # Which of the two full servers reaches the worker first is up to the thread pool. What counts is the draw after it.
+        self.assertIn(order[0], (1, 2), "one of the two servers that filled the line is drawn first")
+        self.assertEqual(order[1], 3, "the server holding the fewest places is drawn next, ahead of the two that filled the line")
         previews = self.cards._previews
         self.assertEqual((previews.held, previews.by_server, previews.waiting, previews.running), (0, {}, [], 0))
 
