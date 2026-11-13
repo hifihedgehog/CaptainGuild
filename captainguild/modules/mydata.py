@@ -84,7 +84,7 @@ KEPT = {
     "echo_messages": "who sent an echoed message, for staff", "starboard_entries": "a public post", "starboard_stars": "a public reaction", "rr_seen": "a public reaction", "voicelink_held": "ends when they leave the voice channel",
     "web_sessions": "signing out ends it, on this device or on all of them", "autorole_waiting": "ends when they pass the rules screen or leave",
     "collab_editors": "who may edit a post, which its collaborators and staff set", "moved_messages": "a public post, which whoever moved it can take down with Delete Moved Message",
-    "rss_feeds": "the server's setup", "entry_giveaway_setup": "the server's setup", "entry_giveaway_closed": "the server's setup",
+    "rss_feeds": "the server's setup", "reddit_feeds": "the server's setup", "entry_giveaway_setup": "the server's setup", "entry_giveaway_closed": "the server's setup",
     "archive_jobs": "the server's record of channel copies", "archive_cursors": "where each channel copy got to",
     "answer_uses": "counts toward the server's daily limit on AI answers, and goes after a day", "answer_costs": "the host's record of what each AI answer cost, kept 70 days",
     "stat_user_settings": "the person's own statistics choices, which they change on this page", "stat_members": "the server's member count over time, which names no one",

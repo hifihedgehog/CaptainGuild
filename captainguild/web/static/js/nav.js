@@ -40,6 +40,7 @@ export const NAV = [
     { key: 'twitch', name: 'Twitch', icon: 'twitch' },
     { key: 'youtube', name: 'YouTube', icon: 'youtube' },
     { key: 'rss', name: 'RSS feeds', icon: 'rss' },
+    { key: 'reddit', name: 'Reddit posts', icon: 'megaphone' },
   ] },
   { title: 'Statistics', items: [
     { key: 'statistics', name: 'Statistics', icon: 'chart-column', staff: true, viewer: true },

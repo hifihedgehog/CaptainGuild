@@ -1,0 +1,48 @@
+{
+  "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
+  "name": "guild-courier",
+  "server": {
+    "dir": "dist/server",
+    "entry": "index.cjs"
+  },
+  "permissions": {
+    "redis": true,
+    "http": {
+      "enable": true,
+      "domains": [
+        "discord.com"
+      ]
+    },
+    "reddit": true
+  },
+  "scheduler": {
+    "tasks": {
+      "deliver": {
+        "endpoint": "/internal/scheduler/deliver",
+        "cron": "*/1 * * * *"
+      }
+    }
+  },
+  "settings": {
+    "subreddit": {
+      "discordWebhookUrl": {
+        "type": "string",
+        "label": "Delivery address",
+        "helpText": "The address Captain Guild shows on its Reddit posts page, under Courier. Leave empty to pause the courier.",
+        "placeholder": "https://discord.com/api/webhooks/...",
+        "validationEndpoint": "/internal/settings/webhook-url"
+      },
+      "accounts": {
+        "type": "string",
+        "label": "Accounts to follow",
+        "helpText": "Reddit account names, separated by commas, such as u/example. Up to 10.",
+        "placeholder": "u/example",
+        "validationEndpoint": "/internal/settings/accounts"
+      }
+    }
+  },
+  "scripts": {
+    "dev": "npm run build:server -- --watch=forever",
+    "build": "npm run build"
+  }
+}

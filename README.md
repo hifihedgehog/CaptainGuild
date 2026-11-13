@@ -51,6 +51,7 @@ Each of these is a separate hosted bot, and several keep features for paying ser
 | Translation and conversions | `/translate`, a Translate menu, flag reactions and messages that start with "translate" translate between 36 languages with DeepL. Currencies and units convert by command or when a message asks, as in "20 bucks in euros". `/export_emojis` downloads the server's emojis. |
 | Bookmarks | Members right-click a message and get a copy of it in their DMs, with a button that deletes it. |
 | RSS feeds | Any RSS or Atom feed, read every minute and posted in a channel under the feed's own name. |
+| Reddit posts | An account's new Reddit posts, relayed to a channel in full: the title as a heading, the post's own words, and its pictures and video uploaded with it. A post too long for one message goes out as several, each ending where the post shows a picture, and the last one mentions the roles you choose. Posts are read from the account's feed, or handed over by a small courier app on Reddit's developer platform that you upload under your own account. |
 | Channel archive | Copies a channel or a forum, threads included, into another channel under each author's name, and picks up where it stopped. |
 | Entry giveaways | A channel or forum where each member's first message is their one entry, and a draw that gives each member one chance. |
 | Forum messages | A welcome in each new post of the forums you pick, one reminder in a post with no message for six days, and a Mark as Solved button and Mark as Solution menu that tag and close a post. |
@@ -59,7 +60,7 @@ Each of these is a separate hosted bot, and several keep features for paying ser
 
 Each server sets all of this on its own dashboard, and a Quick setup page covers the common choices. The [docs page](captainguild/web/static/docs.html) lists every command and who can run it. [docs/screenshots](docs/screenshots) has pictures of the dashboard on the demo's sample data.
 
-Collaborative messages, the message mover, translation, bookmarks, RSS feeds, the channel archive, entry giveaways, wiki answers, forum messages and statistics are command packs. A server sees a pack's commands only once someone who manages the server switches it on from the dashboard.
+Collaborative messages, the message mover, translation, bookmarks, RSS feeds, Reddit posts, the channel archive, entry giveaways, wiki answers, forum messages and statistics are command packs. A server sees a pack's commands only once someone who manages the server switches it on from the dashboard.
 
 ## Your data
 

@@ -1,0 +1,26 @@
+{
+  "private": true,
+  "name": "guild-courier",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build:server": "esbuild src/server/index.ts --bundle --platform=node --format=cjs --outfile=dist/server/index.cjs",
+    "build": "npm run build:server",
+    "dev": "devvit playtest",
+    "test": "npm run test:types && node --test tests/protocol.test.ts",
+    "test:types": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "dependencies": {
+    "@devvit/web": "0.15.1",
+    "@hono/node-server": "^2.1.5",
+    "devvit": "0.15.1",
+    "hono": "4.13.16"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}
