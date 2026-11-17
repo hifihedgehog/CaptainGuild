@@ -519,13 +519,13 @@ class RSSFeeds(Module):
             task.exception()  # a stop may leave nobody waiting for its answer
 
     async def post(self, channel: Any, name: str | None, entry: Entry) -> None:
-        """One entry through the bot's webhook in that channel, under the feed's name or the bot's own, with the bot's picture. Nobody is pinged.
-        An entry with no title, text or link has nothing to show, so it's passed over."""
+        """One entry through the bot's webhook in that channel, under the feed's name or the bot's own, with the bot's picture. The bot's name
+        and picture are the ones that server gave it, when it gave any. Nobody is pinged. An entry with no title, text or link has nothing to
+        show, so it's passed over."""
         text = entry_text(entry)
         if not text:
             return
-        me = self.bot.user
-        await self.bot.webhooks.send(channel, name=name or (me.name if me else None), avatar_url=me.display_avatar.url if me else None, content=text)
+        await self.bot.webhooks.send(channel, name=name, content=text)
 
     # ---- adding and removing ----
 

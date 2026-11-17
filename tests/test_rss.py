@@ -193,6 +193,19 @@ class PollTest(GatewayTest):
         made = [call for call in self.net.calls if call[0] == "POST" and call[1] == "/channels/{channel_id}/webhooks"]
         self.assertEqual(len(made), 1, "one webhook of the bot's own per channel, shared by every feed there")
 
+    async def test_a_post_carries_the_name_and_picture_the_server_gave_the_bot(self):
+        self.give_bot_server_profile(nick="Print Club", avatar="0123456789abcdef0123456789abcdef")
+        await self.feed(name="Printer News")
+        await self.feed(OTHER)
+        self.serve(URL, item("a", "Named"))
+        self.serve(OTHER, item("z", "Plain"))
+        await self.rss.poll()
+        named = next(post for post in self.posts() if post["username"] == "Printer News")
+        plain = next(post for post in self.posts() if post is not named)
+        picture = f"https://cdn.discordapp.com/guilds/{self.guild_id}/users/{self.bot_id}/avatars/0123456789abcdef0123456789abcdef.png?size=1024"
+        self.assertEqual((named["avatar_url"], plain["avatar_url"]), (picture, picture), "the server's picture of the bot, not its account's")
+        self.assertEqual(plain["username"], "Print Club", "a feed with no name of its own goes under the bot's name in that server")
+
     async def test_one_address_is_read_once_for_every_feed_that_follows_it(self):
         await self.feed()
         await self.feed(channel=int(self.log_channel["id"]))

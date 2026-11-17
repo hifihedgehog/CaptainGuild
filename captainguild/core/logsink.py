@@ -17,9 +17,11 @@ from typing import Any, Callable
 
 import aiohttp
 import discord
+from discord.utils import MISSING
 
 from .. import brand
 from .messages import embed_size
+from .webhooks import own_profile
 
 log = logging.getLogger(__name__)
 
@@ -199,7 +201,8 @@ class LogSink:
             try:
                 if isinstance(channel, discord.Thread):
                     kwargs["thread"] = channel
-                await webhook.send(**kwargs)
+                # Under the webhook's own name, with the picture the server gave the bot, which a webhook post doesn't take by itself.
+                await webhook.send(**kwargs, avatar_url=own_profile(self.bot, channel)[1] or MISSING)
                 return
             except discord.NotFound:
                 self._webhooks.pop(channel.parent_id if isinstance(channel, discord.Thread) else channel_id, None)  # someone deleted it, so make a new one next time

@@ -436,6 +436,12 @@ class GatewayTest(unittest.IsolatedAsyncioTestCase):
         self.guild = self.bot.get_guild(self.guild_id)
         self.assertTrue(self.guild.chunked)
 
+    def give_bot_server_profile(self, *, nick: str | None = None, avatar: str | None = None) -> None:
+        """The name and picture a server gives the bot, arriving as Discord sends a member's change."""
+        data = dict(self.member_json[self.bot_id], nick=nick, avatar=avatar)
+        self.member_json[self.bot_id] = data
+        self.bot._connection.parse_guild_member_update({"guild_id": str(self.guild_id), **data})
+
     async def asyncTearDown(self) -> None:
         logging.getLogger().removeHandler(self.errors)
         await self.settle()

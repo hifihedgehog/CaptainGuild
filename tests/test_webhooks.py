@@ -48,6 +48,18 @@ class WebhooksTest(GatewayTest):
         self.assertTrue(first.webhook_id)
         self.assertTrue(self.posts()[0][2].get("wait"))
 
+    async def test_a_post_in_the_bots_own_voice_takes_its_name_and_picture_in_that_server(self):
+        await self.hooks.send(self.channel, name=None, content="no name")
+        self.give_bot_server_profile(nick="Print Club", avatar="0123456789abcdef0123456789abcdef")
+        await self.hooks.send(self.channel, name="Archive Marker", content="a marker")
+        await self.hooks.send(self.channel, name=None, content="profile")
+        await self.hooks.send(self.channel, name="Someone", avatar_url="https://cdn.example/a.png", content="someone else's")
+        bodies = [body for method, path, body in self.net.calls if path == "/webhooks/{webhook_id}/{webhook_token}"]
+        account = str(self.bot.user.display_avatar.url)
+        picture = f"https://cdn.discordapp.com/guilds/{self.guild_id}/users/{self.bot_id}/avatars/0123456789abcdef0123456789abcdef.png?size=1024"
+        self.assertEqual([(body["username"], body["avatar_url"]) for body in bodies], [
+            ("Captain Guild", account), ("Archive Marker", picture), ("Print Club", picture), ("Someone", "https://cdn.example/a.png")])
+
     async def test_an_existing_webhook_of_the_bots_own_is_found_again(self):
         self.net.keep_webhooks = True
         await self.hooks.send(self.channel, name="A", content="one")

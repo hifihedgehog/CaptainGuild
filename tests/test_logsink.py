@@ -58,6 +58,30 @@ class SinkTest(GatewayTest):
             await asyncio.sleep(0.001)
         self.fail("The queue never drained")
 
+    async def test_an_entry_carries_the_picture_the_server_gave_the_bot_under_the_logging_name(self):
+        self.give_bot_server_profile(nick="Print Club", avatar="0123456789abcdef0123456789abcdef")
+        self.post(1)
+        await self.drained()
+        [body] = [body for method, path, body in self.net.calls if method == "POST" and path == "/webhooks/{webhook_id}/{webhook_token}"]
+        self.assertEqual(body["avatar_url"], f"https://cdn.discordapp.com/guilds/{self.guild_id}/users/{self.bot_id}/avatars/0123456789abcdef0123456789abcdef.png?size=1024")
+        self.assertNotIn("username", body, "the entry keeps the logging webhook's own name")
+
+    async def test_an_entry_the_webhook_refuses_goes_out_as_the_bot_all_the_same(self):
+        self.give_bot_server_profile(avatar="0123456789abcdef0123456789abcdef")
+        real_webhook = self.net.webhook
+        refused: list[int] = []
+
+        async def webhook(adapter, route, session=None, **kwargs):
+            if route.path.startswith("/webhooks/") and route.method == "POST" and not refused:
+                refused.append(1)
+                raise discord.HTTPException(FakeHTTPResponse(400), "refused")
+            return await real_webhook(adapter, route, session, **kwargs)
+        self.net.webhook = webhook
+        self.post(1)
+        await self.drained()
+        self.assertEqual(refused, [1])
+        self.assertEqual(self.titles(), ["entry 0"], "the bot's own send takes no field meant for a webhook")
+
     async def test_a_batch_that_fails_goes_back_and_arrives_in_order(self):
         self.post(25)
         self.failures = [discord.DiscordServerError(FakeHTTPResponse(503), "down")]  # the webhook and then the channel both fail once

@@ -34,6 +34,15 @@ def parent_of(channel: Any) -> Any:
     return channel.parent if isinstance(channel, discord.Thread) else channel
 
 
+def own_profile(bot: Any, channel: Any) -> tuple[str | None, str | None]:
+    """The bot's name and picture in a channel's server: the ones that server gave it, or else its account's. A webhook post shows only
+    the name and picture it's sent with, so a post in the bot's own voice sends these."""
+    me = getattr(getattr(channel, "guild", None), "me", None) or bot.user
+    if me is None:
+        return None, None
+    return me.display_name, str(me.display_avatar.url)
+
+
 class Webhooks:
     def __init__(self, bot: Any) -> None:
         self.bot = bot
@@ -71,14 +80,16 @@ class Webhooks:
 
     async def send(self, channel: Any, *, name: str | None, avatar_url: str | None = None, content: str | None = None, embeds: Iterable[discord.Embed] = (),
                    files: Iterable[discord.File] = (), allowed_mentions: discord.AllowedMentions = NONE, poll: Any = MISSING) -> discord.WebhookMessage:
-        """Posts in a channel or thread under this name and picture, pinging nobody unless told to. Raises OpsError with a sentence for a person."""
+        """Posts in a channel or thread under this name and picture, pinging nobody unless told to. With no name or no picture, the bot's own
+        in that server fill in. Raises OpsError with a sentence for a person."""
         embeds, files = list(embeds), list(files)
         thread = channel if isinstance(channel, discord.Thread) else MISSING
+        own_name, own_picture = own_profile(self.bot, channel)
         for attempt in (1, 2):
             hook = await self.hook(channel)
             try:
                 return await hook.send(
-                    content=content or MISSING, username=safe_name(name, brand.NAME), avatar_url=avatar_url or MISSING, embeds=embeds, files=files,
+                    content=content or MISSING, username=safe_name(name or own_name, brand.NAME), avatar_url=avatar_url or own_picture or MISSING, embeds=embeds, files=files,
                     thread=thread, allowed_mentions=allowed_mentions, poll=poll, wait=True,
                 )
             except discord.NotFound as error:
