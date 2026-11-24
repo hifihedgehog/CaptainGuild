@@ -348,17 +348,28 @@ class Bot(commands.Bot):
         async with self._pack_locks.setdefault(guild_id, asyncio.Lock()):
             place = discord.Object(guild_id)
             self.tree.clear_commands(guild=place)
+            packs = {name: module for module in self.modules if module.command_pack for name in (type(module).__module__, *module.pack_modules)}
             for module in self.modules:
                 if module.command_pack and module.on_in(guild_id):
                     for command in self.pack_commands.get(module.key, []):
-                        self.tree.add_command(command, guild=place, override=True)
-            payload = sorted((command.to_dict(self.tree) for kind in (discord.AppCommandType.chat_input, discord.AppCommandType.message, discord.AppCommandType.user)
-                              for command in self.tree.get_commands(guild=place, type=kind)), key=lambda data: (data.get("type", 1), data["name"]))
+                        if module.pack_command_on(guild_id, command.name):
+                            self.tree.add_command(command, guild=place, override=True)
+            payload = []
+            for kind in (discord.AppCommandType.chat_input, discord.AppCommandType.message, discord.AppCommandType.user):
+                for command in self.tree.get_commands(guild=place, type=kind):
+                    owner = packs.get(command.module or "")
+                    data = command.to_dict(self.tree)
+                    payload.append(owner.pack_command_payload(guild_id, data) if owner is not None else data)
+            payload.sort(key=lambda data: (data.get("type", 1), data["name"]))
             digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
             key = f"commands_digest:{guild_id}"
             if await self.db.scalar("SELECT value FROM kv WHERE key = ?", (key,)) == digest:
                 return False
-            await self.tree.sync(guild=place)
+            if self.tree.translator is None:
+                # What the tree's own sync sends, with each pack's wording for this server in it.
+                await self.http.bulk_upsert_guild_commands(self.application_id, guild_id, payload=payload)
+            else:
+                await self.tree.sync(guild=place)  # a translator rewrites every command's text, so the library sends its own
             await self.db.run("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, digest))
             log.info("Registered %d pack commands in %s", len(payload), guild_id)
             return True
@@ -443,7 +454,7 @@ class Bot(commands.Bot):
         if ctx.guild is None or ctx.command is None:
             return True
         cog = getattr(ctx.command, "cog", None)
-        if isinstance(cog, Module) and not cog.on_in(ctx.guild.id):
+        if isinstance(cog, Module) and (not cog.on_in(ctx.guild.id) or not cog.pack_command_on(ctx.guild.id, ctx.command.qualified_name.split()[0])):
             raise commands.CheckFailure("That's switched off in this server. A manager can switch it on from the dashboard.")
         member = ctx.author if isinstance(ctx.author, discord.Member) else ctx.guild.get_member(ctx.author.id)
         if member is None:

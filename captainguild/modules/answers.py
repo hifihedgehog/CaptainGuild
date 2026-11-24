@@ -8,7 +8,8 @@ three a day that /how_do_i or /brainstorm sends to /ask. New posts in chosen for
 whole server.
 
 A server names its sources, each a sitemap or a start page to crawl, and its subject, which fills the wording the model is given. Every
-answer's footer names the sources it drew from.
+answer's footer names the sources it drew from. A server also picks which of the four commands it has, and can give each its own text in
+Discord and its own instructions for the model, since the built-in ones are written for a 3D printing and laser community.
 
 Every request is checked against the server's word lists before it goes out, and every answer before it's posted: through a
 term-matching module the host names when the bot starts, which also censors the answer card, when its folder has this server's
@@ -22,6 +23,7 @@ it in .env as ANTHROPIC_API_KEY.
 from __future__ import annotations
 
 import asyncio
+import copy
 import io
 import json
 import logging
@@ -51,6 +53,21 @@ from ..web.api import ApiError
 log = logging.getLogger(__name__)
 
 COMMANDS = ("how_do_i", "brainstorm", "ask", "make_model")
+# What Discord shows for each command and its one option, unless a server sets its own.
+DESCRIPTIONS = {
+    "how_do_i": "Ask how to do something, answered from the server's wiki",
+    "brainstorm": "Plan a 3D printing or laser project: approaches, filament, and print steps",
+    "ask": "Ask anything about 3D printing or lasers: buying advice, other brands, settings, and more",
+    "make_model": "Get a 3D-printable model file made from your description",
+}
+HINTS = {
+    "how_do_i": "Your question, with your model if it matters, such as: how do I replace the nozzle?",
+    "brainstorm": "What you want to make and what it's for. Ask for a sketch if you want a drawing.",
+    "ask": "Your question, such as: which filament holds up best outdoors?",
+    "make_model": "What to make, with sizes if you know them, such as: a 70 mm coaster with a raised star",
+}
+SLASH_TEXT_MAX = 100  # Discord's longest description for a command or an option
+LIMIT_ORDER = ("ask", "how_do_i", "brainstorm", "make_model")  # the order the daily limit's notice names them in
 ROUNDS = {"how_do_i": 8, "brainstorm": 6, "ask": 8, "make_model": modelmaker.MAX_ROUNDS}
 # The tokens one answer is told it has: its thinking, tool calls, tool results and reply together. The model sees the count and wraps
 # up inside it. Measured against a real wiki on Nov. 8, 2026: at Max effort with no budget, /make_model, /brainstorm and /how_do_i each
@@ -88,8 +105,10 @@ BUILDING = "The bot's copy of the wiki is still being built. Try again in a few 
 RULES_NOTICE = "I can't help with that, because it would break the server rules."  # it never repeats the request, whose wording broke them
 NO_MODELS = "Making models isn't available here, because the bot's host hasn't installed OpenSCAD, Xvfb and prlimit."
 BURST = "You're sending requests faster than the bot can answer. Try again in a minute."
-DAILY = "You've used today's {limit} requests. /ask, /how_do_i, /brainstorm, and /make_model share this limit, and it resets at midnight UTC."
+DAILY = "You've used today's {limit} requests. {shared} share this limit, and it resets at midnight UTC."
+DAILY_ONE = "You've used today's {limit} requests. The limit resets at midnight UTC."
 REDIRECT = "That one fits {ask} better. It can search the web for prices, other brands, and anything the wiki doesn't cover."
+OUTSIDE = "That one is outside what this command answers from the wiki."  # where the server has no /ask to send it to
 NOT_COUNTED = "It didn't count toward your daily limit."
 UPDATE_RUNNING = "A wiki update is already running."
 LATE_REPLY_MARGIN = timedelta(seconds=30)  # time to upload an answer's files before Discord stops taking the command's reply
@@ -226,6 +245,14 @@ SCHEMA = Schema({
     }),
     "footers": Schema({command: Field(prompts.FOOTERS[command], text(500)) for command in COMMANDS}),
     "auto_intro": Field(prompts.AUTO_INTRO, text(1000)),
+    # Which of the four commands this server has. One switched off isn't registered here, and typed it answers that it's off.
+    "commands": Schema({command: Field(True, boolean) for command in COMMANDS}),
+    # What Discord shows for each command here, and the hint on its one option. Empty keeps the built-in text.
+    "descriptions": Schema({command: Field("", text(SLASH_TEXT_MAX)) for command in COMMANDS}),
+    "hints": Schema({command: Field("", text(SLASH_TEXT_MAX)) for command in COMMANDS}),
+    # What the model is told each command answers and how, in place of the built-in wording. Empty keeps the built-in. The part that
+    # cites sources and sets the reply's length and language stays as the bot needs it.
+    "instructions": Schema({command: Field("", text(PROMPT_MAX)) for command in COMMANDS}),
 })
 
 
@@ -386,6 +413,32 @@ class Answers(Module):
             return {"enabled": NOT_ALLOWED}
         return None
 
+    def pack_command_on(self, guild_id: int, name: str) -> bool:
+        """The four AI commands are each the server's choice. /refresh_wiki and /auto_answer come with the pack."""
+        return name not in COMMANDS or bool(self.cfg(guild_id)["commands"][name])
+
+    def pack_command_payload(self, guild_id: int, payload: dict) -> dict:
+        """A command as Discord registers it in this server, with the server's own description and hint when it set them."""
+        name = payload.get("name")
+        if name not in COMMANDS:
+            return payload
+        settings = self.cfg(guild_id)
+        description, hint = settings["descriptions"][name], settings["hints"][name]
+        if not description and not hint:
+            return payload
+        payload = copy.deepcopy(payload)
+        if description:
+            payload["description"] = description
+        if hint and payload.get("options"):
+            payload["options"][0]["description"] = hint
+        return payload
+
+    @staticmethod
+    def shared_limit(settings: dict, limit: int) -> str:
+        """The notice for a person who used today's requests, naming the commands that share them here."""
+        names = [f"/{command}" for command in LIMIT_ORDER if settings["commands"][command]]
+        return DAILY.format(limit=limit, shared=prompts.names(names)) if len(names) > 1 else DAILY_ONE.format(limit=limit)
+
     def sources_in_use(self) -> dict[str, tuple[Source, int]]:
         """The sources of every server with this pack on, by key, with the shortest time between updates any of them asks for."""
         found: dict[str, tuple[Source, int]] = {}
@@ -515,7 +568,8 @@ class Answers(Module):
         if not library.shelves:
             return engine.Answer(status="unavailable", model=model)
         values = self.wording(settings)
-        parts = [prompts.fill(prompts.PROMPTS[command], values), prompts.fill(settings["rules"], values)]
+        guidance = settings["instructions"][command] or prompts.GUIDANCE[command]
+        parts = [prompts.fill(guidance, values), prompts.fill(prompts.PROTOCOL[command], values), prompts.fill(settings["rules"], values)]
         if auto:
             parts.append(prompts.fill(prompts.AUTO_NOTE, values))
         handlers: dict[str, engine.Handler] = {}
@@ -532,8 +586,9 @@ class Answers(Module):
 
     # ---- limits ----
 
-    async def take_slot(self, guild_id: int, user_id: int, limit: int) -> tuple[str | None, int]:
-        """(why the person can't ask now, the day the request counted on). Counts the request when they can."""
+    async def take_slot(self, guild_id: int, user_id: int, limit: int, used_up: str = "") -> tuple[str | None, int]:
+        """(why the person can't ask now, the day the request counted on). Counts the request when they can. used_up is the notice for
+        someone past the daily limit."""
         now = time.monotonic()
         if len(self._bursts) > BURSTS_REMEMBERED:
             for person in [person for person, times in self._bursts.items() if not times or now - times[-1] > BURST_SECONDS]:
@@ -555,7 +610,7 @@ class Answers(Module):
                 times.remove(now)
             except ValueError:
                 pass
-            return DAILY.format(limit=limit), day
+            return used_up or DAILY.format(limit=limit, shared=prompts.names([f"/{command}" for command in LIMIT_ORDER])), day
         return None, day
 
     async def refund(self, guild_id: int, user_id: int, day: int) -> bool:
@@ -717,7 +772,7 @@ class Answers(Module):
             log.info("%s user=%s status=blocked_request terms=%s", command, ctx.author.id, sorted(blocked)[:5] if isinstance(blocked, set) else "automod")
             await ctx.fail(RULES_NOTICE)
             return
-        refusal, day = await self.take_slot(guild.id, ctx.author.id, settings["daily_limit"])
+        refusal, day = await self.take_slot(guild.id, ctx.author.id, settings["daily_limit"], self.shared_limit(settings, settings["daily_limit"]))
         if refusal:
             await ctx.fail(refusal)
             return
@@ -737,7 +792,7 @@ class Answers(Module):
         await self.record(guild.id, ctx.author.id, command, result, time.monotonic() - started, where=f"user={ctx.author.id}")
         if result.status == "redirect":
             refunded = await self.refund_redirect(guild.id, ctx.author.id, day)
-            words = REDIRECT.format(ask=await self._mention(guild, "ask"))
+            words = REDIRECT.format(ask=await self._mention(guild, "ask")) if settings["commands"]["ask"] else OUTSIDE
             await self.send_back(ctx, f"{words} {NOT_COUNTED}" if refunded else words)
             return
         if result.status != "ok":
@@ -772,27 +827,27 @@ class Answers(Module):
                 known = {}
         return known.get(name, f"/{name}")
 
-    @commands.hybrid_command(name="how_do_i", description="Ask how to do something, answered from the server's wiki")
+    @commands.hybrid_command(name="how_do_i", description=DESCRIPTIONS["how_do_i"])
     @commands.guild_only()
-    @app_commands.describe(question="Your question, with your model if it matters, such as: how do I replace the nozzle?")
+    @app_commands.describe(question=HINTS["how_do_i"])
     async def how_do_i(self, ctx: commands.Context, *, question: commands.Range[str, 5, 1000]) -> None:
         await self.run_request(ctx, "how_do_i", question)
 
-    @commands.hybrid_command(name="brainstorm", description="Plan a 3D printing or laser project: approaches, filament, and print steps")
+    @commands.hybrid_command(name="brainstorm", description=DESCRIPTIONS["brainstorm"])
     @commands.guild_only()
-    @app_commands.describe(idea="What you want to make and what it's for. Ask for a sketch if you want a drawing.")
+    @app_commands.describe(idea=HINTS["brainstorm"])
     async def brainstorm(self, ctx: commands.Context, *, idea: commands.Range[str, 10, 1500]) -> None:
         await self.run_request(ctx, "brainstorm", idea)
 
-    @commands.hybrid_command(name="ask", description="Ask anything about 3D printing or lasers: buying advice, other brands, settings, and more")
+    @commands.hybrid_command(name="ask", description=DESCRIPTIONS["ask"])
     @commands.guild_only()
-    @app_commands.describe(question="Your question, such as: which filament holds up best outdoors?")
+    @app_commands.describe(question=HINTS["ask"])
     async def ask(self, ctx: commands.Context, *, question: commands.Range[str, 5, 1500]) -> None:
         await self.run_request(ctx, "ask", question)
 
-    @commands.hybrid_command(name="make_model", description="Get a 3D-printable model file made from your description")
+    @commands.hybrid_command(name="make_model", description=DESCRIPTIONS["make_model"])
     @commands.guild_only()
-    @app_commands.describe(description="What to make, with sizes if you know them, such as: a 70 mm coaster with a raised star")
+    @app_commands.describe(description=HINTS["make_model"])
     async def make_model(self, ctx: commands.Context, *, description: commands.Range[str, 10, 1000]) -> None:
         await self.run_request(ctx, "make_model", description)
 
@@ -959,6 +1014,8 @@ class Answers(Module):
             "sources": [{"name": row["name"], **(await self.copies.status(Source.of(row)))} for row in settings["sources"]],
             "spend": await self.spend(req.guild_id),
             "is_admin": req.is_admin,
+            # What an empty field keeps, for the page to show and to start a server's own from.
+            "built_in": {"descriptions": DESCRIPTIONS, "hints": HINTS, "instructions": prompts.GUIDANCE},
         }
 
     async def _refresh_now(self, req: Any) -> dict:

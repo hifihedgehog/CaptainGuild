@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import hashlib
 import json
 import os
 import subprocess
@@ -354,15 +355,26 @@ class LimitsTest(AnswersCase):
         await self.slash("how_do_i", question=QUESTION)
         await self.slash("how_do_i", question=QUESTION)
         await self.slash("ask", question="Which filament holds up best outdoors?")
-        self.assertEqual(self.last_text(), "\N{CROSS MARK} " + pack.DAILY.format(limit=2))
+        self.assertEqual(self.last_text(), "\N{CROSS MARK} You've used today's 2 requests. /ask, /how_do_i, /brainstorm, and /make_model share this limit, and it resets at midnight UTC.", "the same words as before servers picked their commands")
         self.assertEqual(len(self.model.requests), 4, "the third request never reached the model")
         self.assertEqual(await self.uses(), 2)
         self.answers._bursts.clear()  # a restart forgets the minute, and the day's count stays in the database
         await self.slash("how_do_i", question=QUESTION)
-        self.assertEqual(self.last_text(), "\N{CROSS MARK} " + pack.DAILY.format(limit=2))
+        self.assertEqual(self.last_text(), "\N{CROSS MARK} You've used today's 2 requests. /ask, /how_do_i, /brainstorm, and /make_model share this limit, and it resets at midnight UTC.")
         self.answered("Three. [S1]")
         await self.slash("how_do_i", question=QUESTION, user_id=self.mod_id)
         self.assertEqual(self.last_card()["description"], "Three. [1]", "the limit is each person's own")
+
+    async def test_the_limits_notice_names_the_commands_this_server_has(self):
+        await self.configure(daily_limit=1, commands={"how_do_i": True, "brainstorm": False, "ask": True, "make_model": False})
+        self.answered("One. [S1]")
+        await self.slash("how_do_i", question=QUESTION)
+        await self.slash("ask", question="Which controller should I buy?")
+        self.assertEqual(self.last_text(), "\N{CROSS MARK} You've used today's 1 requests. /ask and /how_do_i share this limit, and it resets at midnight UTC.")
+        await self.configure(commands={"how_do_i": True, "brainstorm": False, "ask": False, "make_model": False})
+        self.answers._bursts.clear()
+        await self.slash("how_do_i", question=QUESTION)
+        self.assertEqual(self.last_text(), "\N{CROSS MARK} You've used today's 1 requests. The limit resets at midnight UTC.")
 
     async def test_a_server_past_its_monthly_budget_gets_no_more_answers(self):
         await self.configure(monthly_limit=5)
@@ -451,9 +463,76 @@ class LimitsTest(AnswersCase):
             await self.slash_with(self.model.text("ASK"))
         self.assertEqual(self.last_text(), pack.REDIRECT.format(ask="/ask") + " " + pack.NOT_COUNTED)
 
+    async def test_a_question_for_ask_where_the_server_has_no_ask(self):
+        await self.configure(commands={"how_do_i": True, "brainstorm": True, "ask": False, "make_model": True})
+        await self.slash_with(self.model.text("ASK"))
+        self.assertEqual(self.last_text(), pack.OUTSIDE + " " + pack.NOT_COUNTED, "it points nowhere the member can't go")
+        self.assertEqual(await self.uses(), 0)
+
     async def slash_with(self, reply) -> None:
         self.model.reply(reply)
         await self.slash("how_do_i", question=QUESTION)
+
+
+class ServerWordingTest(AnswersCase):
+    """A server picks which of the four commands it has, what Discord shows for each, and what the model is told each one answers."""
+
+    def registered(self) -> dict[str, dict]:
+        """The commands as last sent to Discord for this server, by name."""
+        [*_, body] = [body for method, path, body in self.net.calls if method == "PUT" and path == "/applications/{application_id}/guilds/{guild_id}/commands"]
+        return {command["name"]: command for command in body}
+
+    async def test_a_server_picks_which_commands_it_has(self):
+        await self.configure(commands={"how_do_i": True, "brainstorm": False, "ask": True, "make_model": False})
+        self.assertTrue(await self.bot.sync_server_commands(self.guild_id))
+        names = {command.name for command in self.bot.tree.get_commands(guild=discord.Object(self.guild_id))}
+        self.assertEqual(names, {"how_do_i", "ask", "refresh_wiki", "auto_answer"})
+        self.assertEqual(set(self.registered()), names, "Discord gets the same list the bot answers")
+        for typed in ("!brainstorm a stand for my controller", "!make_model a 70 mm coaster with a star"):
+            self.dispatch_message(user_id=self.member_id, content=typed)
+            await self.drain()
+            self.assertIn("switched off in this server", self.last_text())
+        self.assertEqual(self.model.requests, [])
+        await self.configure(commands={"how_do_i": True, "brainstorm": True, "ask": True, "make_model": True})
+        self.assertTrue(await self.bot.sync_server_commands(self.guild_id))
+        self.assertEqual(set(self.registered()), {"how_do_i", "brainstorm", "ask", "make_model", "refresh_wiki", "auto_answer"})
+        self.assert_no_errors()
+
+    async def test_the_servers_text_goes_to_discord_and_the_rest_keeps_the_built_in(self):
+        before = self.registered()
+        self.assertEqual((before["ask"]["description"], before["ask"]["options"][0]["description"]), (pack.DESCRIPTIONS["ask"], pack.HINTS["ask"]))
+        await self.configure(descriptions={"how_do_i": "", "brainstorm": "", "ask": "Ask anything about controllers on PC", "make_model": ""},
+                             hints={"how_do_i": "", "brainstorm": "", "ask": "Your question, such as which controller to buy", "make_model": ""})
+        self.assertTrue(await self.bot.sync_server_commands(self.guild_id), "new wording is sent, though the list didn't change")
+        after = self.registered()
+        self.assertEqual((after["ask"]["description"], after["ask"]["options"][0]["description"]), ("Ask anything about controllers on PC", "Your question, such as which controller to buy"))
+        self.assertEqual((after["ask"]["options"][0]["name"], after["ask"]["options"][0]["min_length"]), ("question", 5), "only the words change")
+        self.assertEqual((after["how_do_i"]["description"], after["how_do_i"]["options"][0]["description"]), (pack.DESCRIPTIONS["how_do_i"], pack.HINTS["how_do_i"]))
+        self.assertEqual(self.bot.tree.get_command("ask", guild=discord.Object(self.guild_id)).description, pack.DESCRIPTIONS["ask"], "the command itself is every server's")
+        self.assertFalse(await self.bot.sync_server_commands(self.guild_id), "nothing changed since")
+
+    async def test_the_servers_instructions_take_the_place_of_the_built_in_part_only(self):
+        await self.configure(instructions={"how_do_i": "You help members of {community} with Example software, from {wiki}.", "brainstorm": "", "ask": "", "make_model": ""})
+        self.answered("Restart it. [S1]")
+        await self.slash("how_do_i", question=QUESTION)
+        own = "You help members of this Discord server with Example software, from the Sample Wiki."
+        self.assertEqual(self.model.requests[0]["system"], "\n\n".join((own, prompts.fill(prompts.PROTOCOL["how_do_i"], WORDS), prompts.fill(prompts.RULES, WORDS))))
+        self.answered("Plan. [S1]")
+        await self.slash("brainstorm", idea="A wall mount for a game controller")
+        self.assertEqual(self.model.requests[-1]["system"], prompts.fill(prompts.BRAINSTORM, WORDS) + "\n\n" + prompts.fill(prompts.RULES, WORDS), "a command left empty keeps the built-in")
+
+    async def test_a_server_that_set_nothing_gets_the_built_in_prompts_word_for_word(self):
+        """The built-in prompts were tuned against real help posts. Splitting them so a server can write the first part changed no word."""
+        fingerprints = {
+            "how_do_i": "d26d8fc8aa73fdbfe71f2917170bba5b14b1fc0cbbdb0beba524eef5e58bef87",
+            "brainstorm": "d3388728199a360e2ebe89d8cfff8bb3a8910125b754550dfbc63c81447ed5a7",
+            "ask": "9ac6f7ab49a37a16a7bd688cc16cb8e2ba2e04237b24a1cadda3c713b547846e",
+            "make_model": "a47d598cf2ebf4616df73b396ac04ace43a6fe98ca4a5ef2b4c9d3c7aea78793",
+        }
+        for command, fingerprint in fingerprints.items():
+            whole = prompts.GUIDANCE[command] + "\n\n" + prompts.PROTOCOL[command]
+            self.assertEqual(whole, prompts.PROMPTS[command], command)
+            self.assertEqual(hashlib.sha256(whole.encode()).hexdigest(), fingerprint, f"{command}'s built-in prompt changed. Run the eval before shipping that.")
 
 
 class HostListTest(AnswersCase):
@@ -653,6 +732,15 @@ class AutoAnswerTest(AnswersCase):
         self.assertEqual((row["command"], row["user_id"]), ("auto_answer", None))
         self.assert_no_errors()
 
+    async def test_an_automatic_answer_uses_the_servers_own_instructions(self):
+        await self.configure(instructions={"how_do_i": "You help members of {community} with Example software.", "brainstorm": "", "ask": "", "make_model": ""})
+        self.answered("Restart it. [S1]")
+        self.post("App will not start", "The app closes as soon as I open it after the update, what should I check?")
+        await self.drain()
+        first = self.model.requests[0]
+        self.assertEqual(first["system"], "\n\n".join(("You help members of this Discord server with Example software.", prompts.fill(prompts.PROTOCOL["how_do_i"], WORDS),
+                                                         prompts.fill(prompts.RULES, WORDS), prompts.fill(prompts.AUTO_NOTE, WORDS))))
+
     async def test_a_post_is_answered_once(self):
         self.answered("Let it cool first. [S1]")
         thread = self.post("Nozzle clogged", "My nozzle is clogged after printing PETG, how do I clear it?")
@@ -848,6 +936,11 @@ class DefaultsTest(unittest.TestCase):
         self.assertEqual(defaults["models"], {"how_do_i": "claude-haiku-5-5", "brainstorm": "claude-sonnet-5-5", "ask": "claude-sonnet-5-5", "make_model": "claude-sonnet-5-5"})
         self.assertEqual(defaults["efforts"], {"how_do_i": "high", "brainstorm": "high", "ask": "high", "make_model": "medium"})
         self.assertEqual((pack.ROUNDS, pack.BURST_COUNT, pack.BURST_SECONDS, pack.CONCURRENCY), ({"how_do_i": 8, "brainstorm": 6, "ask": 8, "make_model": 8}, 3, 60.0, 3))
+        self.assertEqual(defaults["commands"], {"how_do_i": True, "brainstorm": True, "ask": True, "make_model": True}, "a server has all four until it picks")
+        for field in ("descriptions", "hints", "instructions"):
+            self.assertEqual(defaults[field], {"how_do_i": "", "brainstorm": "", "ask": "", "make_model": ""}, field)
+        for words in (*pack.DESCRIPTIONS.values(), *pack.HINTS.values()):
+            self.assertLessEqual(len(words), pack.SLASH_TEXT_MAX, words)
 
 
 class CardTest(unittest.TestCase):
@@ -915,7 +1008,8 @@ class DashboardTest(BotTest):
             await asyncio.wait([task], timeout=10)
 
     async def test_only_an_administrator_changes_what_the_answers_cost(self):
-        for form in ({"enabled": True}, {"daily_limit": 50}, {"models": {"ask": "claude-opus-5-5"}}, {"sources": [WIKI_ROW]}, {"rules": "Be brief."}):
+        for form in ({"enabled": True}, {"daily_limit": 50}, {"models": {"ask": "claude-opus-5-5"}}, {"sources": [WIKI_ROW]}, {"rules": "Be brief."},
+                     {"commands": {"make_model": False}}, {"instructions": {"ask": "Answer briefly."}}, {"descriptions": {"ask": "Ask"}}, {"hints": {"ask": "Your question"}}):
             status, body = await self.call(self.manager, "PUT", "/settings/answers", form)
             self.assertEqual(status, 400, form)
             self.assertEqual(body["fields"], {next(iter(form)): access.ONLY_ADMINS}, form)
@@ -982,6 +1076,7 @@ class DashboardTest(BotTest):
         with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
             status, body = await self.call(self.admin, "GET", "/answers/status")
         self.assertEqual((body["key_set"], body["is_admin"]), (True, True))
+        self.assertEqual(body["built_in"], {"descriptions": pack.DESCRIPTIONS, "hints": pack.HINTS, "instructions": prompts.GUIDANCE}, "what an empty field keeps")
         [row] = body["sources"]
         self.assertEqual((row["name"], row["pages"], row["loaded"], row["running"]), ("the Sample Wiki", 1, True, False))
 

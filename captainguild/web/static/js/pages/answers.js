@@ -26,6 +26,8 @@ const SUBJECT = [
 const NEW_SOURCE = { name: '', kind: 'sitemap', address: '', prefix: '/', include: [], exclude: [], selector: '', refresh_hours: 24 };
 
 const money = (value) => '$' + Number(value || 0).toFixed(2);
+// The commands a server has, with each command's settings shown only for those.
+const offered = (form) => COMMANDS.filter((command) => !form.data.commands || form.data.commands[command.key]);
 const lines = (list) => (list || []).join('\n');
 const fromLines = (value) => value.split('\n').map((line) => line.trim()).filter(Boolean);
 
@@ -33,7 +35,7 @@ function Tile({ label, value }) {
   return html`<div class="stat-tile"><b>${value}</b><span class="muted small">${label}</span></div>`;
 }
 
-function Checks({ status }) {
+function Checks({ status, form }) {
   const screening = status.screening;
   return html`
     ${!status.key_set && html`<${Notice} kind="bad">The bot's host hasn't added an API key for AI answers. Until it's in the bot's .env file as ANTHROPIC_API_KEY, the commands say so and nothing is posted.<//>`}
@@ -42,7 +44,7 @@ function Checks({ status }) {
       ${screening.lists_loaded && ' The word lists the bot\'s host set up have no file for this server.'}
       ${screening.load_failed && " The word lists the bot's host named at start didn't load, and the host's log says why."}<//>`}
     ${!status.message_text && html`<${Notice} kind="warn">Discord hasn't given this bot Message Content, so automatic answers wait for it. The slash commands work.<//>`}
-    ${!status.models_ready && html`<${Notice}>/make_model says it's unavailable here, because the bot's host hasn't installed OpenSCAD, Xvfb and prlimit.<//>`}
+    ${!status.models_ready && form.data.commands && form.data.commands.make_model && html`<${Notice}>/make_model says it's unavailable here, because the bot's host hasn't installed OpenSCAD, Xvfb and prlimit.<//>`}
     ${!status.sketches_ready && html`<${Notice}>Sketches are off, because the cairo library isn't on the bot's host. /brainstorm and /ask answer without one.<//>`}`;
 }
 
@@ -130,17 +132,44 @@ function AutoAnswers({ form, locked }) {
   <//>`;
 }
 
+function Commands({ form, locked, builtIn }) {
+  return html`<${Card} icon="terminal" title="Commands" footer=${html`<${SaveButton} form=${form} />`}>
+    <p class="muted">The commands this server has. A command switched off isn't in this server's list, and typed it answers that it's off. The descriptions and hints are what Discord shows for each, and empty ones keep the text shown in them.</p>
+    ${COMMANDS.map((command) => html`<div key=${command.key} style=${{ marginBottom: '10px' }}>
+      <${Switch} label=${command.label} disabled=${locked} ...${form.bind('commands.' + command.key)} />
+      ${form.data.commands && form.data.commands[command.key] && html`<div class="row" style=${{ alignItems: 'flex-start' }}>
+        <div style=${{ flex: '1 1 220px' }}><${TextInput} label="Description" maxLength=${100} placeholder=${builtIn.descriptions[command.key]} disabled=${locked} ...${form.bind('descriptions.' + command.key)} /></div>
+        <div style=${{ flex: '1 1 220px' }}><${TextInput} label="Hint" maxLength=${100} placeholder=${builtIn.hints[command.key]} disabled=${locked} ...${form.bind('hints.' + command.key)} /></div>
+      </div>`}
+    </div>`)}
+  <//>`;
+}
+
+function Instructions({ form, locked, builtIn }) {
+  const [open, setOpen] = useState(false);
+  return html`<${Card} icon="file-text" title="Instructions" right=${html`<button class="btn small" onClick=${() => setOpen(!open)}>${open ? 'Hide' : 'Show'}</button>`}>
+    <p class="muted">What the model is told each command answers and how. The built-in instructions are written for a 3D printing and laser community, so a server about something else writes its own. {community}, {subject}, {maker}, {support}, {models}, {search_hints} and {wiki} fill in from Subject and Sources. The bot adds how to cite sources, the reply's length and its language, and the server's rules.</p>
+    ${open && html`<div>
+      ${offered(form).map((command) => html`<div key=${command.key}>
+        <${TextArea} label=${command.label + ' instructions'} rows=${8} maxLength=${20000} placeholder="Empty uses the built-in instructions." disabled=${locked} ...${form.bind('instructions.' + command.key)} />
+        ${!locked && html`<button class="btn small" style=${{ marginBottom: '12px' }} onClick=${() => form.set('instructions.' + command.key, builtIn.instructions[command.key])}><${Icon} name="copy" size=${14} /> Start from the built-in instructions</button>`}
+      </div>`)}
+      <${SaveButton} form=${form} />
+    </div>`}
+  <//>`;
+}
+
 function Limits({ form, locked }) {
   return html`<${Card} icon="timer" title="Limits" footer=${html`<${SaveButton} form=${form} />`}>
     <${NumberInput} label="Monthly budget (dollars)" help="Once this month's answers have cost this much, the commands and automatic answers stop until the 1st, UTC. 0 means no budget." min=${0} max=${100000} disabled=${locked} ...${form.bind('monthly_limit')} />
-    <${NumberInput} label="Requests a day for each person" help="/how_do_i, /brainstorm, /ask and /make_model share it, and it starts again at midnight UTC. A request nothing was billed for doesn't count, and neither do the first three a day that the bot sends to /ask. Everyone can also ask three times a minute." min=${1} max=${1000} disabled=${locked} ...${form.bind('daily_limit')} />
+    <${NumberInput} label="Requests a day for each person" help="The commands share it, and it starts again at midnight UTC. A request nothing was billed for doesn't count, and neither do the first three a day that the bot sends to /ask. Everyone can also ask three times a minute." min=${1} max=${1000} disabled=${locked} ...${form.bind('daily_limit')} />
   <//>`;
 }
 
 function Models({ form, locked, choices }) {
   return html`<${Card} icon="bot" title="Models" footer=${html`<${SaveButton} form=${form} />`}>
     <p class="muted">The model each command asks, and how much it thinks first. A larger model and more effort cost more. /ask doesn't offer Haiku 5.5, which can't run its web search.</p>
-    ${COMMANDS.map((command) => html`<div class="row" key=${command.key} style=${{ alignItems: 'flex-start' }}>
+    ${offered(form).map((command) => html`<div class="row" key=${command.key} style=${{ alignItems: 'flex-start' }}>
       <div style=${{ flex: '2 1 220px' }}><${Select} label=${command.label} options=${(choices[command.key] || []).map((value) => ({ value, label: value }))} disabled=${locked} ...${form.bind('models.' + command.key)} /></div>
       <div style=${{ flex: '1 1 120px' }}><${Select} label="Effort" options=${EFFORTS} disabled=${locked} ...${form.bind('efforts.' + command.key)} /></div>
     </div>`)}
@@ -160,7 +189,7 @@ function Wording({ form, locked }) {
     <p class="muted">The server's rules go after every command's prompt, and a request that breaks them gets a fixed notice that doesn't repeat it. In the footers, {sources} names the sources an answer drew from.</p>
     ${open && html`<div>
       <${TextArea} label="Server rules" rows=${10} maxLength=${20000} help="{wiki} names the server's sources." disabled=${locked} ...${form.bind('rules')} />
-      ${COMMANDS.map((command) => html`<${TextInput} key=${command.key} label=${command.label + ' footer'} maxLength=${500} disabled=${locked} ...${form.bind('footers.' + command.key)} />`)}
+      ${offered(form).map((command) => html`<${TextInput} key=${command.key} label=${command.label + ' footer'} maxLength=${500} disabled=${locked} ...${form.bind('footers.' + command.key)} />`)}
       <${SaveButton} form=${form} />
     </div>`}
   <//>`;
@@ -200,15 +229,17 @@ function Loaded() {
       <${Grid}>
         <${Col}>
           <${Card} icon="sparkles" title="Wiki answers" footer=${html`<${SaveButton} form=${form} />`}>
-            <${Switch} label="Wiki answers on" help="Adds /how_do_i, /brainstorm, /ask, /make_model, /refresh_wiki and /auto_answer to this server, and answers new posts in the forums below." disabled=${!status.is_admin || !status.allowed} ...${form.bind('enabled')} value=${status.allowed && form.data.enabled} />
-            <${Checks} status=${status} />
+            <${Switch} label="Wiki answers on" help="Adds the commands switched on under Commands, with /refresh_wiki and /auto_answer, to this server, and answers new posts in the forums under Automatic answers." disabled=${!status.is_admin || !status.allowed} ...${form.bind('enabled')} value=${status.allowed && form.data.enabled} />
+            <${Checks} status=${status} form=${form} />
           <//>
+          <${Commands} form=${form} locked=${!status.is_admin} builtIn=${status.built_in} />
           <${Sources} form=${form} status=${status} onRefresh=${refresh} refreshing=${refreshing} />
           <${AutoAnswers} form=${form} locked=${!status.is_admin} />
         <//>
         <${Col}>
           <${Spend} spend=${status.spend} limit=${form.saved.monthly_limit} />
           <${Subject} form=${form} locked=${!status.is_admin} />
+          <${Instructions} form=${form} locked=${!status.is_admin} builtIn=${status.built_in} />
           <${Limits} form=${form} locked=${!status.is_admin} />
           <${Models} form=${form} locked=${!status.is_admin} choices=${status.model_choices} />
           <${Wording} form=${form} locked=${!status.is_admin} />

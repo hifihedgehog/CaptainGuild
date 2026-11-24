@@ -72,6 +72,15 @@ class Module(commands.Cog):
             return True
         return guild_id is not None and bool(self.cfg(guild_id).get("enabled"))
 
+    def pack_command_on(self, guild_id: int, name: str) -> bool:
+        """Whether a command of this pack, named at its top level, goes into a server that has the pack on. A pack whose commands are each
+        the server's choice says so here, and the command isn't registered there and refuses when typed."""
+        return True
+
+    def pack_command_payload(self, guild_id: int, payload: dict) -> dict:
+        """A command of this pack as Discord registers it in one server. A pack that lets a server word its commands returns a changed copy."""
+        return payload
+
     async def on_load(self) -> None:
         pass
 

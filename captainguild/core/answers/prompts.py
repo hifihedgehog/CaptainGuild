@@ -1,9 +1,9 @@
 """What the model is told, and the tools it gets.
 
 The wording is written for a 3D printing and laser community whose sources describe its products. What each server's community and
-products are fills the {placeholders}: its own settings under Subject, and {wiki}, the names of its sources. The server's rules are a
-setting of their own, appended to every command's prompt, and so are the lines under each answer, where {sources} names the sources an
-answer drew from.
+products are fills the {placeholders}: its own settings under Subject, and {wiki}, the names of its sources. A server about something
+else writes its own first part of each command's prompt, GUIDANCE below, and keeps the second. The server's rules are a setting of their
+own, appended to every command's prompt, and so are the lines under each answer, where {sources} names the sources an answer drew from.
 """
 from __future__ import annotations
 
@@ -143,6 +143,22 @@ Then write a short reply for Discord, 300 to 1,200 characters: what you made and
 Reply in the main language of the member's message. Write English with American spelling."""
 
 PROMPTS = {"how_do_i": HOW_DO_I, "brainstorm": BRAINSTORM, "ask": ASK, "make_model": MAKE_MODEL}
+
+
+def _split(prompt: str, protocol_starts: str) -> tuple[str, str]:
+    """A prompt as (what it answers and how, what the bot relies on), split at the paragraph that starts the second part."""
+    at = prompt.index("\n\n" + protocol_starts)
+    return prompt[:at], prompt[at + 2:]
+
+
+# Each prompt in two parts. The first says what the command answers and how, and a server can write its own in place of it. The second
+# holds what the bot relies on, which no server changes: the tags that cite sources, the reply's length and its language. Joined with a
+# blank line between, the two parts are the prompt above, word for word.
+GUIDANCE: dict[str, str] = {}
+PROTOCOL: dict[str, str] = {}
+for _command, _starts in (("how_do_i", "Each passage the tools return"), ("brainstorm", "Each passage the tools return"), ("ask", "Each wiki passage starts"),
+                          ("make_model", "Then write a short reply")):
+    GUIDANCE[_command], PROTOCOL[_command] = _split(PROMPTS[_command], _starts)
 
 SEARCH_DESCRIPTION = ("Keyword search over {wiki}. Returns the best-matching page sections, each with a source tag, its page title and section heading, "
                       "and its URL. Use the words the wiki would use: {search_hints}. Run more searches with different wording when one misses.")
